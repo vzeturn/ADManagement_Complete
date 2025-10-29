@@ -4,6 +4,7 @@ using ADManagement.Infrastructure.Exporters;
 using ADManagement.Infrastructure.Repositories;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace ADManagement.Infrastructure;
 
@@ -16,22 +17,86 @@ public static class DependencyInjection
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        // Register configurations
-        var adConfig = configuration.GetSection(ADConfiguration.SectionName).Get<ADConfiguration>() 
-            ?? new ADConfiguration();
-        adConfig.Validate();
-        services.AddSingleton(adConfig);
+        // Register AD Configuration with validation
+        try
+        {
+            var adConfig = configuration
+                .GetSection(ADConfiguration.SectionName)
+                .Get<ADConfiguration>();
+
+            if (adConfig == null)
+            {
+                throw new InvalidOperationException(
+                    $"Configuration section '{ADConfiguration.SectionName}' not found in appsettings.json");
+            }
+
+            // Validate configuration
+            adConfig.Validate();
+            
+            services.AddSingleton(adConfig);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Log and rethrow with more context
+            throw new InvalidOperationException(
+                "Failed to configure Active Directory settings. " +
+                "Please ensure 'ADConfiguration' section exists in appsettings.json and contains valid values. " +
+                $"Error: {ex.Message}", 
+                ex);
+        }
+
+        // Register Export Configuration
+        var exportConfig = configuration
+            .GetSection(ExportConfiguration.SectionName)
+            .Get<ExportConfiguration>() ?? new ExportConfiguration();
         
-        var exportConfig = configuration.GetSection(ExportConfiguration.SectionName).Get<ExportConfiguration>() 
-            ?? new ExportConfiguration();
         services.AddSingleton(exportConfig);
-        
+
         // Register repositories
         services.AddScoped<IADRepository, ADRepository>();
-        
+
         // Register exporters
         services.AddScoped<IExcelExporter, ExcelExporter>();
-        
+
         return services;
+    }
+
+    /// <summary>
+    /// Validates that all required infrastructure services are registered
+    /// </summary>
+    public static void ValidateInfrastructureServices(this IServiceProvider serviceProvider)
+    {
+        try
+        {
+            // Validate AD Configuration
+            var adConfig = serviceProvider.GetRequiredService<ADConfiguration>();
+            var logger = serviceProvider.GetService<ILogger<ADConfiguration>>();
+            
+            logger?.LogInformation("AD Configuration loaded: Domain={Domain}, SSL={UseSSL}, Port={Port}",
+                adConfig.Domain, adConfig.UseSSL, adConfig.Port);
+
+            // Validate Export Configuration
+            var exportConfig = serviceProvider.GetRequiredService<ExportConfiguration>();
+            logger?.LogInformation("Export Configuration loaded: OutputDirectory={Directory}",
+                exportConfig.OutputDirectory);
+
+            // Ensure output directory exists
+            if (!string.IsNullOrWhiteSpace(exportConfig.OutputDirectory))
+            {
+                Directory.CreateDirectory(exportConfig.OutputDirectory);
+            }
+
+            // Validate repositories can be created
+            _ = serviceProvider.GetRequiredService<IADRepository>();
+            _ = serviceProvider.GetRequiredService<IExcelExporter>();
+
+            logger?.LogInformation("All infrastructure services validated successfully");
+        }
+        catch (Exception ex)
+        {
+            var logger = serviceProvider.GetService<ILogger<ADConfiguration>>();
+            logger?.LogError(ex, "Infrastructure services validation failed");
+            throw;
+        }
     }
 }

@@ -1,6 +1,8 @@
 using ADManagement.Application.Interfaces;
+using ADManagement.WPF.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Windows;
 using System.Windows.Media;
@@ -11,6 +13,7 @@ public partial class MainWindowViewModel : ObservableObject
 {
     private readonly IADUserService _userService;
     private readonly ILogger<MainWindowViewModel> _logger;
+    private readonly IServiceProvider _serviceProvider;
     private readonly System.Windows.Threading.DispatcherTimer _timer;
 
     [ObservableProperty]
@@ -37,10 +40,14 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty]
     private DateTime _currentTime = DateTime.Now;
 
-    public MainWindowViewModel(IADUserService userService, ILogger<MainWindowViewModel> logger)
+    public MainWindowViewModel(
+        IADUserService userService, 
+        ILogger<MainWindowViewModel> logger,
+        IServiceProvider serviceProvider)
     {
         _userService = userService;
         _logger = logger;
+        _serviceProvider = serviceProvider;
 
         // Setup timer for status bar clock
         _timer = new System.Windows.Threading.DispatcherTimer
@@ -52,6 +59,9 @@ public partial class MainWindowViewModel : ObservableObject
 
         // Test connection on startup
         _ = TestConnectionAsync();
+        
+        // Load dashboard by default
+        Navigate("Dashboard");
     }
 
     [RelayCommand]
@@ -97,32 +107,50 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void Navigate(string page)
+    private void Navigate(string? page)
     {
-        StatusMessage = $"Navigating to {page}...";
+        if (string.IsNullOrWhiteSpace(page))
+            return;
 
-        // TODO: Implement navigation to different view models
-        CurrentViewModel = page switch
+        try
         {
-            "Dashboard" => null, // DashboardViewModel
-            "Users" => null, // UsersViewModel
-            "Groups" => null, // GroupsViewModel
-            "Export" => null, // ExportViewModel
-            "OUs" => null, // OUsViewModel
-            "About" => null, // AboutViewModel
-            _ => null
-        };
+            StatusMessage = $"Navigating to {page}...";
 
-        StatusMessage = $"{page} loaded";
+            CurrentViewModel = page switch
+            {
+                "Dashboard" => CreateDashboardViewModel(),
+                "Users" => _serviceProvider.GetRequiredService<UsersViewModel>(),
+                "Groups" => _serviceProvider.GetRequiredService<GroupsViewModel>(),
+                "Export" => _serviceProvider.GetRequiredService<ExportViewModel>(),
+                "OUs" => CreateOUsViewModel(),
+                "About" => CreateAboutViewModel(),
+                _ => null
+            };
+
+            StatusMessage = $"{page} loaded";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error navigating to {Page}", page);
+            StatusMessage = $"Error loading {page}: {ex.Message}";
+        }
     }
 
     [RelayCommand]
     private void OpenSettings()
     {
-        StatusMessage = "Opening settings...";
-        // TODO: Implement settings dialog
-        MessageBox.Show("Settings dialog - Coming soon!", "Settings", 
-            MessageBoxButton.OK, MessageBoxImage.Information);
+        try
+        {
+            StatusMessage = "Opening settings...";
+            CurrentViewModel = _serviceProvider.GetRequiredService<SettingsViewModel>();
+            StatusMessage = "Settings loaded";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error opening settings");
+            MessageBox.Show($"Failed to open settings: {ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private async Task LoadStatisticsAsync()
@@ -135,12 +163,57 @@ public partial class MainWindowViewModel : ObservableObject
                 UserCount = usersResult.Value.Count();
             }
 
-            // TODO: Load group count
+            // TODO: Load group count when group service is implemented
             GroupCount = 0;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error loading statistics");
         }
+    }
+
+    private object CreateDashboardViewModel()
+    {
+        // Simple dashboard view model
+        return new
+        {
+            Title = "Dashboard",
+            WelcomeMessage = "Welcome to AD Management System",
+            Statistics = new
+            {
+                TotalUsers = UserCount,
+                TotalGroups = GroupCount,
+                LastSync = DateTime.Now
+            }
+        };
+    }
+
+    private object CreateOUsViewModel()
+    {
+        // Simple OU view model
+        return new
+        {
+            Title = "Organizational Units",
+            Message = "OU management - Coming soon"
+        };
+    }
+
+    private object CreateAboutViewModel()
+    {
+        // Simple about view model
+        return new
+        {
+            Title = "About",
+            ApplicationName = "AD Management System",
+            Version = "1.0.0",
+            Description = "Active Directory Management Tool built with .NET 9.0 and WPF",
+            Copyright = $"© {DateTime.Now.Year} - All rights reserved"
+        };
+    }
+
+    // Cleanup
+    public void Dispose()
+    {
+        _timer?.Stop();
     }
 }

@@ -6,6 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
+    <!-- Suppress platform compatibility warnings for Windows-only code -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
     <UserSecretsId>admanagement-console-secrets</UserSecretsId>
   </PropertyGroup>
 
