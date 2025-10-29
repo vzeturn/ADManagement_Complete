@@ -1,5 +1,4 @@
 using System.DirectoryServices;
-using System.DirectoryServices.AccountManagement;
 using ADManagement.Application.Configuration;
 using ADManagement.Domain.Common;
 using ADManagement.Domain.Entities;
