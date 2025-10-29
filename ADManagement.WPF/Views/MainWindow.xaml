@@ -1,0 +1,214 @@
+<Window x:Class="ADManagement.WPF.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+        xmlns:viewmodels="clr-namespace:ADManagement.WPF.ViewModels"
+        mc:Ignorable="d"
+        Title="AD Management System" 
+        Height="800" Width="1400"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource MaterialDesignPaper}"
+        FontFamily="{DynamicResource MaterialDesignFont}"
+        TextElement.Foreground="{DynamicResource MaterialDesignBody}"
+        TextElement.FontWeight="Regular"
+        TextElement.FontSize="13"
+        TextOptions.TextFormattingMode="Ideal"
+        TextOptions.TextRenderingMode="Auto">
+
+    <Window.DataContext>
+        <viewmodels:MainWindowViewModel/>
+    </Window.DataContext>
+
+    <materialDesign:DialogHost Identifier="RootDialog">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- Top App Bar -->
+            <materialDesign:ColorZone Grid.Row="0" 
+                                     Mode="PrimaryMid" 
+                                     Padding="16"
+                                     materialDesign:ElevationAssist.Elevation="Dp4">
+                <DockPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <materialDesign:PackIcon Kind="ActiveDirectory" 
+                                               Width="32" Height="32" 
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,16,0"/>
+                        <TextBlock Text="AD Management System" 
+                                 Style="{StaticResource MaterialDesignHeadline5TextBlock}"
+                                 VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" 
+                              HorizontalAlignment="Right"
+                              DockPanel.Dock="Right">
+                        <!-- Connection Status -->
+                        <Border Background="{Binding ConnectionStatusColor}"
+                              CornerRadius="12"
+                              Padding="12,6"
+                              Margin="0,0,16,0">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="{Binding ConnectionStatusIcon}" 
+                                                       Width="16" Height="16"
+                                                       VerticalAlignment="Center"
+                                                       Margin="0,0,8,0"/>
+                                <TextBlock Text="{Binding ConnectionStatusText}"
+                                         FontWeight="Medium"
+                                         VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Settings Button -->
+                        <Button Style="{StaticResource MaterialDesignIconButton}"
+                              ToolTip="Settings"
+                              Command="{Binding OpenSettingsCommand}">
+                            <materialDesign:PackIcon Kind="Settings" Width="24" Height="24"/>
+                        </Button>
+                    </StackPanel>
+                </DockPanel>
+            </materialDesign:ColorZone>
+
+            <!-- Main Content -->
+            <Grid Grid.Row="1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="250"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Navigation Drawer -->
+                <Border Grid.Column="0" 
+                       Background="{DynamicResource MaterialDesignCardBackground}"
+                       BorderBrush="{DynamicResource MaterialDesignDivider}"
+                       BorderThickness="0,0,1,0">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="0,16,0,0">
+                            <!-- Dashboard -->
+                            <RadioButton Style="{StaticResource MaterialDesignNavigationRailRadioButton}"
+                                       IsChecked="True"
+                                       Command="{Binding NavigateCommand}"
+                                       CommandParameter="Dashboard"
+                                       Margin="8">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="ViewDashboard" 
+                                                           Width="24" Height="24"
+                                                           Margin="0,0,16,0"/>
+                                    <TextBlock Text="Dashboard" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton>
+
+                            <!-- Users -->
+                            <RadioButton Style="{StaticResource MaterialDesignNavigationRailRadioButton}"
+                                       Command="{Binding NavigateCommand}"
+                                       CommandParameter="Users"
+                                       Margin="8">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="AccountMultiple" 
+                                                           Width="24" Height="24"
+                                                           Margin="0,0,16,0"/>
+                                    <TextBlock Text="Users" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton>
+
+                            <!-- Groups -->
+                            <RadioButton Style="{StaticResource MaterialDesignNavigationRailRadioButton}"
+                                       Command="{Binding NavigateCommand}"
+                                       CommandParameter="Groups"
+                                       Margin="8">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="AccountGroup" 
+                                                           Width="24" Height="24"
+                                                           Margin="0,0,16,0"/>
+                                    <TextBlock Text="Groups" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton>
+
+                            <!-- Export -->
+                            <RadioButton Style="{StaticResource MaterialDesignNavigationRailRadioButton}"
+                                       Command="{Binding NavigateCommand}"
+                                       CommandParameter="Export"
+                                       Margin="8">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="FileExport" 
+                                                           Width="24" Height="24"
+                                                           Margin="0,0,16,0"/>
+                                    <TextBlock Text="Export" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton>
+
+                            <Separator Margin="8,16"/>
+
+                            <!-- Organizational Units -->
+                            <RadioButton Style="{StaticResource MaterialDesignNavigationRailRadioButton}"
+                                       Command="{Binding NavigateCommand}"
+                                       CommandParameter="OUs"
+                                       Margin="8">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="FileTree" 
+                                                           Width="24" Height="24"
+                                                           Margin="0,0,16,0"/>
+                                    <TextBlock Text="Organizational Units" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton>
+
+                            <Separator Margin="8,16"/>
+
+                            <!-- About -->
+                            <RadioButton Style="{StaticResource MaterialDesignNavigationRailRadioButton}"
+                                       Command="{Binding NavigateCommand}"
+                                       CommandParameter="About"
+                                       Margin="8">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="Information" 
+                                                           Width="24" Height="24"
+                                                           Margin="0,0,16,0"/>
+                                    <TextBlock Text="About" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Border>
+
+                <!-- Content Area -->
+                <ContentControl Grid.Column="1" 
+                              Content="{Binding CurrentViewModel}"
+                              Margin="16"/>
+            </Grid>
+
+            <!-- Status Bar -->
+            <materialDesign:ColorZone Grid.Row="2" 
+                                     Mode="PrimaryLight" 
+                                     Padding="8,4"
+                                     materialDesign:ElevationAssist.Elevation="Dp2">
+                <DockPanel>
+                    <TextBlock Text="{Binding StatusMessage}" 
+                             VerticalAlignment="Center"
+                             Margin="8,0"/>
+
+                    <StackPanel Orientation="Horizontal" 
+                              HorizontalAlignment="Right"
+                              DockPanel.Dock="Right">
+                        <TextBlock Text="{Binding UserCount, StringFormat='Users: {0}'}" 
+                                 Margin="16,0"
+                                 VerticalAlignment="Center"/>
+                        <Separator Style="{StaticResource MaterialDesignVerticalSeparator}"
+                                 Margin="8,0"/>
+                        <TextBlock Text="{Binding GroupCount, StringFormat='Groups: {0}'}" 
+                                 Margin="16,0"
+                                 VerticalAlignment="Center"/>
+                        <Separator Style="{StaticResource MaterialDesignVerticalSeparator}"
+                                 Margin="8,0"/>
+                        <TextBlock Text="{Binding CurrentTime, StringFormat='yyyy-MM-dd HH:mm:ss'}" 
+                                 Margin="16,0"
+                                 VerticalAlignment="Center"/>
+                    </StackPanel>
+                </DockPanel>
+            </materialDesign:ColorZone>
+        </Grid>
+    </materialDesign:DialogHost>
+</Window>
