@@ -139,7 +139,7 @@ public class ADUserService : IADUserService
             return Result.Failure("Password change validation failed", errors);
         }
         
-        return await _repository.ChangePasswordAsync(request.Username, request.NewPassword, cancellationToken);
+        return await _repository.ChangePasswordAsync(request.Username, request.NewPassword, request.MustChangeAtNextLogon, cancellationToken);
     }
     
     public async Task<Result> EnableUserAsync(string username, CancellationToken cancellationToken = default)
@@ -176,6 +176,54 @@ public class ADUserService : IADUserService
         }
         
         return await _repository.UnlockUserAsync(username, cancellationToken);
+    }
+    
+    public async Task<Result<ADUserDto>> CreateUserAsync(DTOs.CreateUserRequest request, CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation("Creating new user: {Username}", request.Username);
+        
+        if (string.IsNullOrWhiteSpace(request.Username))
+        {
+            return Result.Failure<ADUserDto>("Username is required");
+        }
+        
+        if (string.IsNullOrWhiteSpace(request.FirstName) || string.IsNullOrWhiteSpace(request.LastName))
+        {
+            return Result.Failure<ADUserDto>("First name and last name are required");
+        }
+        
+        if (string.IsNullOrWhiteSpace(request.Password))
+        {
+            return Result.Failure<ADUserDto>("Password is required");
+        }
+        
+        var result = await _repository.CreateUserAsync(
+            request.Username,
+            request.FirstName,
+            request.LastName,
+            request.Password,
+            request.OrganizationalUnit,
+            request.DisplayName,
+            request.Email,
+            request.Department,
+            request.Title,
+            request.Company,
+            request.Office,
+            request.PhoneNumber,
+            request.Description,
+            request.MustChangePasswordOnNextLogon,
+            request.AccountEnabled,
+            request.PasswordNeverExpires,
+            request.InitialGroups,
+            cancellationToken);
+        
+        if (!result.IsSuccess || result.Value == null)
+        {
+            return Result.Failure<ADUserDto>(result.Message, result.Errors);
+        }
+        
+        var dto = result.Value.ToDto();
+        return Result.Success(dto, result.Message);
     }
     
     public async Task<Result<IEnumerable<string>>> GetUserGroupsAsync(string username, CancellationToken cancellationToken = default)

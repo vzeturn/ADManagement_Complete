@@ -1,7 +1,4 @@
 using System.Windows.Controls;
-using System.Windows.Input;
-using ADManagement.WPF.ViewModels;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace ADManagement.WPF.Views;
 
@@ -15,12 +12,12 @@ public partial class UsersView : UserControl
         InitializeComponent();
     }
 
-    private void DataGridRow_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    private void DataGridRow_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
-        if (DataContext is UsersViewModel && UsersDataGrid.SelectedItem is ADManagement.Application.DTOs.ADUserDto user)
+        if (DataContext is ADManagement.WPF.ViewModels.UsersViewModel vm)
         {
-            var nav = App.Services?.GetRequiredService<ADManagement.WPF.Services.INavigationService>();
-            nav?.NavigateTo<UserDetailsViewModel>(user);
+            var user = UsersDataGrid.SelectedItem as ADManagement.Application.DTOs.ADUserDto;
+            vm.OpenDetailsCommand.Execute(user);
         }
     }
 }

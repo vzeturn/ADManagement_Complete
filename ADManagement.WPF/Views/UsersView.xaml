@@ -32,6 +32,7 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
                     <!-- Search Box -->
@@ -56,6 +57,12 @@
                             Style="{StaticResource SecondaryButton}"
                             Command="{Binding RefreshCommand}"
                             Margin="8,0,0,0" Height="36" Width="100"/>
+                    
+                    <!-- Create User Button -->
+                    <Button Grid.Column="3" Content="➕ Create User" 
+                            Style="{StaticResource PrimaryButton}"
+                            Command="{Binding CreateNewUserCommand}"
+                            Margin="8,0,0,0" Height="36" Width="120"/>
                 </Grid>
             </Grid>
         </Border>
@@ -67,10 +74,29 @@
                           SelectedItem="{Binding SelectedUser, Mode=TwoWay}"
                           Style="{StaticResource ModernDataGrid}"
                           Visibility="{Binding IsLoading, Converter={StaticResource InverseBoolToVisibilityConverter}}"
-                          AutoGenerateColumns="False">
+                          AutoGenerateColumns="False"
+                          EnableRowVirtualization="True"
+                          EnableColumnVirtualization="True"
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling">
+                    <DataGrid.InputBindings>
+                        <KeyBinding Key="Enter" Command="{Binding OpenDetailsCommand}" CommandParameter="{Binding SelectedItem, ElementName=UsersDataGrid}"/>
+                    </DataGrid.InputBindings>
                     <DataGrid.Resources>
                         <Style TargetType="DataGridRow">
                             <EventSetter Event="MouseDoubleClick" Handler="DataGridRow_MouseDoubleClick"/>
+                            <Setter Property="ContextMenu">
+                                <Setter.Value>
+                                    <ContextMenu>
+                                        <MenuItem Header="Reset Password"
+                                                  Command="{Binding DataContext.ResetPasswordCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                  CommandParameter="{Binding}" />
+                                        <MenuItem Header="View Details"
+                                                  Command="{Binding DataContext.OpenDetailsCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                  CommandParameter="{Binding}" />
+                                    </ContextMenu>
+                                </Setter.Value>
+                            </Setter>
                         </Style>
                     </DataGrid.Resources>
                     <DataGrid.Columns>
@@ -100,7 +126,7 @@
             </Grid>
         </Border>
 
-        <!-- Action Buttons and Status -->
+                <!-- Action Buttons and Status -->
         <Border Grid.Row="2" Style="{StaticResource Card}">
             <Grid>
                 <Grid.RowDefinitions>
@@ -110,6 +136,11 @@
 
                 <!-- Action Buttons -->
                 <WrapPanel Grid.Row="0" Margin="0,0,0,12">
+                    <Button Content="➕ Create User" 
+                            Style="{StaticResource PrimaryButton}"
+                            Command="{Binding CreateUserCommand}"
+                            Margin="0,0,8,0" Height="36" Width="130"/>
+                    
                     <Button Content="✓ Enable User" 
                             Style="{StaticResource PrimaryButton}"
                             Command="{Binding EnableUserCommand}"
@@ -125,15 +156,19 @@
                             Command="{Binding UnlockUserCommand}"
                             Margin="0,0,8,0" Height="36" Width="130"/>
                     
-                    <Button Content="ℹ️ View Details" 
-                            Style="{StaticResource SecondaryButton}"
-                            Command="{Binding ViewUserDetailsCommand}"
-                            Height="36" Width="130"/>
+                    <!-- Removed: View Details button (double-click or context menu instead) -->
                 </WrapPanel>
 
                 <!-- Status Bar -->
                 <Border Grid.Row="1" Background="#F0F0F0" Padding="8" CornerRadius="4">
-                    <TextBlock Text="{Binding StatusMessage}" FontSize="12"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" FontSize="12"/>
+                        <TextBlock Grid.Column="1" Text="Press Enter to view details" FontSize="12" Opacity="0.6"/>
+                    </Grid>
                 </Border>
             </Grid>
         </Border>

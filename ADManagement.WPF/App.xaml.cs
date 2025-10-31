@@ -47,52 +47,62 @@ public partial class App : System.Windows.Application
 
             var dialog = _host.Services.GetRequiredService<IDialogService>();
             var credProvider = _host.Services.GetRequiredService<ICredentialProvider>();
-            var mainWindow = _host.Services.GetRequiredService<MainWindow>();
+            var nav = _host.Services.GetRequiredService<INavigationService>();
+            var adConfig = _host.Services.GetRequiredService<ADManagement.Application.Configuration.ADConfiguration>();
 
-            // Try connecting with current/saved credentials
-            bool isConnected = await TryConnectAsync();
+            // Keep original timeout and use short timeout for quick validation
+            var originalTimeout = adConfig.TimeoutSeconds;
+            adConfig.TimeoutSeconds = Math.Min(originalTimeout, 3);
 
-            if (!isConnected && credProvider.HasCredentials)
+            bool isConnected = false;
+
+            // If we have saved credentials, try them first
+            if (credProvider.HasCredentials)
             {
-                // Clear invalid saved credentials
-                credProvider.ClearCredentials();
-            }
-
-            // Show main window early
-            mainWindow.Show();
-
-            if (!isConnected)
-            {
-                // Try getting credentials from user
-                var creds = dialog.ShowCredentialsDialog(
-                    "Enter your domain credentials to connect to Active Directory:",
-                    "AD Authentication Required"
-                );
-
-                if (creds != null)
+                Log.Information("Testing saved credentials before showing UI");
+                isConnected = await TryConnectAsync();
+                if (!isConnected)
                 {
-                    credProvider.SetCredentials(
-                        creds.Value.Username ?? string.Empty,
-                        creds.Value.Password ?? string.Empty
-                    );
-
-                    isConnected = await TryConnectAsync();
+                    Log.Warning("Saved credentials are invalid; clearing cached credentials");
+                    credProvider.ClearCredentials();
                 }
             }
 
-            if (!isConnected)
-            {
-                Log.Warning("No valid credentials provided - opening settings");
-                var nav = _host.Services.GetRequiredService<INavigationService>();
-                nav.NavigateTo<SettingsViewModel>();
+			// If saved credentials not valid, prompt user with inline validation dialog (do not show main window yet)
+			if (!isConnected)
+			{
+				var validated = await dialog.ShowCredentialsDialogWithValidationAsync(
+					async (username, password) =>
+					{
+						// Temporarily set credentials to test them; clear if invalid
+						credProvider.SetCredentials(username ?? string.Empty, password ?? string.Empty);
+						var ok = await TryConnectAsync();
+						if (!ok)
+						{
+							credProvider.ClearCredentials();
+						}
+						return ok;
+					},
+					"Enter your domain credentials to connect to Active Directory:",
+					"AD Authentication Required");
 
-                MessageBox.Show(
-                    "Please configure your Active Directory connection settings and credentials.",
-                    "Configuration Required",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information
-                );
-            }
+				if (validated == null)
+				{
+					Log.Information("User cancelled credentials dialog on startup - exiting application");
+					Shutdown();
+					return;
+				}
+
+				isConnected = true;
+			}
+
+            // Restore original timeout
+            adConfig.TimeoutSeconds = originalTimeout;
+
+            Log.Information("Credentials validated - launching main UI");
+
+            var mainWindowFinal = _host.Services.GetRequiredService<MainWindow>();
+            mainWindowFinal.Show();
 
             Log.Information("Application started successfully");
         }
@@ -265,10 +275,12 @@ public partial class App : System.Windows.Application
                 services.AddTransient<SettingsViewModel>();
                 services.AddTransient<UserDetailsViewModel>();
                 services.AddTransient<GroupSearchViewModel>();
+                services.AddTransient<CreateUserViewModel>();
 
                 // Add Windows (Transient)
                 services.AddTransient<MainWindow>();
                 services.AddTransient<GroupSearchDialog>();
+                services.AddTransient<Views.CreateUserDialog>();
 
                 // Register AuditService
                 services.AddSingleton<ADManagement.Application.Interfaces.IAuditService, ADManagement.Infrastructure.Services.AuditService>();

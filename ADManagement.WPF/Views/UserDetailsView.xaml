@@ -52,7 +52,8 @@
                     </Grid.RowDefinitions>
 
                     <StackPanel Orientation="Horizontal" Grid.Row="0" Margin="0,0,0,8">
-                        <Button Content="🔍 Search &amp; Add Group" Click="OpenGroupSearchDialog" Style="{StaticResource PrimaryButton}" Height="32" IsEnabled="{Binding IsLoading, Converter={StaticResource InverseBooleanConverter}}"/>
+                        <Button Content="➕ Add to Group" Command="{Binding AddToGroupCommand}" Style="{StaticResource PrimaryButton}" Height="32" IsEnabled="{Binding IsLoading, Converter={StaticResource InverseBooleanConverter}}"/>
+                        <Button Content="🔍 Search &amp; Add Group" Click="OpenGroupSearchDialog" Style="{StaticResource PrimaryButton}" Height="32" Margin="8,0,0,0" IsEnabled="{Binding IsLoading, Converter={StaticResource InverseBooleanConverter}}"/>
                         <Button Content="🔄 Refresh" Command="{Binding LoadUserGroupsCommand}" Margin="8,0,0,0" Style="{StaticResource SecondaryButton}" Height="32" IsEnabled="{Binding IsLoading, Converter={StaticResource InverseBooleanConverter}}"/>
                     </StackPanel>
 

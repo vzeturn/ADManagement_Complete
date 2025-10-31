@@ -60,4 +60,15 @@ public interface IDialogService
     /// </summary>
     /// <returns>A tuple of username and password, or null if cancelled</returns>
     (string? Username, string? Password)? ShowCredentialsDialog(string message = "Enter domain credentials", string title = "Credentials");
+
+	/// <summary>
+	/// Shows a credentials dialog that validates input inline before closing.
+	/// The validator should return true if the provided username/password are valid.
+	/// On success the dialog closes and returns the provided credentials; on failure it stays open and shows the error.
+	/// Returns null if the user cancels.
+	/// </summary>
+	Task<(string? Username, string? Password)?> ShowCredentialsDialogWithValidationAsync(
+		Func<string, string, Task<bool>> validator,
+		string message = "Enter domain credentials",
+		string title = "Credentials");
 }

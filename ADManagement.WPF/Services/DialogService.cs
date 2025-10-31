@@ -1,6 +1,8 @@
 using Microsoft.Win32;
 using System.Windows;
 using System.Windows.Controls;
+using System.Threading.Tasks;
+using System.Windows.Input;
 
 namespace ADManagement.WPF.Services;
 
@@ -219,4 +221,112 @@ public class DialogService : IDialogService
 
         return null;
     }
+
+	public async Task<(string? Username, string? Password)?> ShowCredentialsDialogWithValidationAsync(
+		Func<string, string, Task<bool>> validator,
+		string message = "Enter domain credentials",
+		string title = "Credentials")
+	{
+		var window = new Window
+		{
+			Title = title,
+			Width = 460,
+			Height = 260,
+			WindowStartupLocation = WindowStartupLocation.CenterScreen,
+			ResizeMode = ResizeMode.NoResize
+		};
+
+		var grid = new Grid { Margin = new Thickness(12) };
+		grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+		grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+		grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+		grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+		grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+		var text = new TextBlock { Text = message, Margin = new Thickness(0, 0, 0, 8) };
+		Grid.SetRow(text, 0);
+		grid.Children.Add(text);
+
+		var userLabel = new TextBlock { Text = "Username", Margin = new Thickness(0, 0, 0, 2) };
+		Grid.SetRow(userLabel, 1);
+		grid.Children.Add(userLabel);
+
+		var userBox = new TextBox { Margin = new Thickness(0, 0, 0, 8), Padding = new Thickness(8) };
+		Grid.SetRow(userBox, 2);
+		grid.Children.Add(userBox);
+
+		var passLabel = new TextBlock { Text = "Password", Margin = new Thickness(0, 0, 0, 2) };
+		Grid.SetRow(passLabel, 3);
+		grid.Children.Add(passLabel);
+
+		var passBox = new PasswordBox { Margin = new Thickness(0, 0, 0, 8), Padding = new Thickness(8) };
+		Grid.SetRow(passBox, 4);
+		grid.Children.Add(passBox);
+
+		var statusText = new TextBlock { Text = string.Empty, Margin = new Thickness(0, 0, 0, 8), Foreground = System.Windows.Media.Brushes.OrangeRed };
+		grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+		Grid.SetRow(statusText, 5);
+		grid.Children.Add(statusText);
+
+		var buttonPanel = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+		var ok = new Button { Content = "Connect", Width = 100, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
+		var cancel = new Button { Content = "Cancel", Width = 100, IsCancel = true };
+
+		ok.Click += async (s, e) =>
+		{
+			statusText.Text = string.Empty;
+			ok.IsEnabled = false;
+			cancel.IsEnabled = false;
+			userBox.IsEnabled = false;
+			passBox.IsEnabled = false;
+			Mouse.OverrideCursor = Cursors.Wait;
+			try
+			{
+				statusText.Text = "Testing credentials...";
+				var isValid = false;
+				try
+				{
+					isValid = await validator(userBox.Text ?? string.Empty, passBox.Password ?? string.Empty);
+				}
+				catch (Exception ex)
+				{
+					statusText.Text = $"Validation error: {ex.Message}";
+				}
+
+				if (isValid)
+				{
+					window.DialogResult = true;
+					window.Close();
+					return;
+				}
+
+				statusText.Text = "Authentication failed. Please check your username and password and try again.";
+			}
+			finally
+			{
+				Mouse.OverrideCursor = null;
+				ok.IsEnabled = true;
+				cancel.IsEnabled = true;
+				userBox.IsEnabled = true;
+				passBox.IsEnabled = true;
+			}
+		};
+
+		cancel.Click += (s, e) => { window.DialogResult = false; window.Close(); };
+
+		buttonPanel.Children.Add(ok);
+		buttonPanel.Children.Add(cancel);
+		grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+		Grid.SetRow(buttonPanel, 6);
+		grid.Children.Add(buttonPanel);
+
+		window.Content = grid;
+
+		var result = window.ShowDialog();
+		if (result == true)
+		{
+			return (userBox.Text, passBox.Password);
+		}
+		return null;
+	}
 }

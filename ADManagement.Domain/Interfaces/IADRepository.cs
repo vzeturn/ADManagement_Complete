@@ -47,7 +47,7 @@ public interface IADRepository
     /// <summary>
     /// Changes a user's password
     /// </summary>
-    Task<Result> ChangePasswordAsync(string username, string newPassword, CancellationToken cancellationToken = default);
+    Task<Result> ChangePasswordAsync(string username, string newPassword, bool mustChangeAtNextLogon, CancellationToken cancellationToken = default);
     
     /// <summary>
     /// Enables or disables a user account
@@ -58,6 +58,29 @@ public interface IADRepository
     /// Unlocks a user account
     /// </summary>
     Task<Result> UnlockUserAsync(string username, CancellationToken cancellationToken = default);
+    
+    /// <summary>
+    /// Creates a new user in Active Directory
+    /// </summary>
+    Task<Result<ADUser>> CreateUserAsync(
+        string username,
+        string firstName,
+        string lastName,
+        string password,
+        string? organizationalUnit,
+        string? displayName,
+        string? email,
+        string? department,
+        string? title,
+        string? company,
+        string? office,
+        string? phoneNumber,
+        string? description,
+        bool mustChangePasswordOnNextLogon,
+        bool accountEnabled,
+        bool passwordNeverExpires,
+        IEnumerable<string>? initialGroups,
+        CancellationToken cancellationToken = default);
     
     #endregion
     

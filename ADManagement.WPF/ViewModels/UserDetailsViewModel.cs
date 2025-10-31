@@ -112,6 +112,49 @@ public partial class UserDetailsViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private async Task AddToGroupAsync()
+    {
+        if (SelectedUser == null)
+        {
+            _dialogService.ShowWarning("Select a user first.", "Warning");
+            return;
+        }
+
+        var groupName = _dialogService.ShowInputDialog($"Enter group name to add user '{SelectedUser.SamAccountName}' to:", "Add to Group");
+        if (string.IsNullOrWhiteSpace(groupName))
+        {
+            return;
+        }
+
+        try
+        {
+            IsLoading = true;
+            StatusMessage = $"Adding user to group {groupName}...";
+
+            var result = await _userService.AddUserToGroupAsync(SelectedUser.SamAccountName!, groupName);
+            if (result.IsSuccess)
+            {
+                _dialogService.ShowSuccess(result.Message, "Success");
+                await LoadUserGroupsAsync();
+            }
+            else
+            {
+                _dialogService.ShowError(result.Message, "Error");
+            }
+        }
+        catch (Exception ex)
+        {
+            _dialogService.ShowError($"Error adding user to group: {ex.Message}", "Error");
+            _logger.LogError(ex, "Error adding user {Username} to group {GroupName}", SelectedUser.SamAccountName, groupName);
+        }
+        finally
+        {
+            IsLoading = false;
+            StatusMessage = "Ready";
+        }
+    }
+
+    [RelayCommand]
     private async Task RemoveFromGroupAsync()
     {
         if (SelectedUser == null || SelectedGroup == null)
@@ -123,15 +166,31 @@ public partial class UserDetailsViewModel : ObservableObject
         if (!_dialogService.ShowConfirmation($"Remove user '{SelectedUser.SamAccountName}' from group '{SelectedGroup}'?", "Confirm"))
             return;
 
-        var result = await _userService.RemoveUserFromGroupAsync(SelectedUser.SamAccountName!, SelectedGroup);
-        if (result.IsSuccess)
+        try
         {
-            _dialogService.ShowSuccess(result.Message, "Success");
-            await LoadUserGroupsAsync();
+            IsLoading = true;
+            StatusMessage = $"Removing user from group {SelectedGroup}...";
+
+            var result = await _userService.RemoveUserFromGroupAsync(SelectedUser.SamAccountName!, SelectedGroup);
+            if (result.IsSuccess)
+            {
+                _dialogService.ShowSuccess(result.Message, "Success");
+                await LoadUserGroupsAsync();
+            }
+            else
+            {
+                _dialogService.ShowError(result.Message, "Error");
+            }
         }
-        else
+        catch (Exception ex)
         {
-            _dialogService.ShowError(result.Message, "Error");
+            _dialogService.ShowError($"Error removing user from group: {ex.Message}", "Error");
+            _logger.LogError(ex, "Error removing user {Username} from group {GroupName}", SelectedUser.SamAccountName, SelectedGroup);
+        }
+        finally
+        {
+            IsLoading = false;
+            StatusMessage = "Ready";
         }
     }
 
@@ -173,11 +232,14 @@ public partial class UserDetailsViewModel : ObservableObject
         }
 
         // Validate locally using validator rules by calling service; ChangePasswordAsync will validate as well
+        var mustChange = _dialogService.ShowConfirmation($"Force user '{SelectedUser.SamAccountName}' to change password at next logon?", "Password Policy");
+        
         var request = new PasswordChangeRequest
         {
             Username = SelectedUser.SamAccountName,
             NewPassword = newPassword,
-            ConfirmPassword = newPassword
+            ConfirmPassword = newPassword,
+            MustChangeAtNextLogon = mustChange
         };
 
         // Confirm

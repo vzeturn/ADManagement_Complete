@@ -398,7 +398,7 @@ public class ADRepository : IADRepository
         }, cancellationToken);
     }
 
-    public async Task<Result> ChangePasswordAsync(string username, string newPassword, CancellationToken cancellationToken = default)
+    public async Task<Result> ChangePasswordAsync(string username, string newPassword, bool mustChangeAtNextLogon, CancellationToken cancellationToken = default)
     {
         return await Task.Run(() =>
         {
@@ -415,6 +415,11 @@ public class ADRepository : IADRepository
                 }
 
                 user.SetPassword(newPassword);
+                if (mustChangeAtNextLogon)
+                {
+                    // Force change at next logon
+                    user.ExpirePasswordNow();
+                }
                 user.Save();
 
                 _logger.LogInformation("Password changed successfully for user: {Username}", username);
@@ -428,6 +433,167 @@ public class ADRepository : IADRepository
             {
                 _logger.LogError(ex, "Error changing password for user: {Username}", username);
                 return Result.Failure($"Failed to change password: {ex.Message}");
+            }
+        }, cancellationToken);
+    }
+
+    public async Task<Result<ADUser>> CreateUserAsync(
+        string username,
+        string firstName,
+        string lastName,
+        string password,
+        string? organizationalUnit,
+        string? displayName,
+        string? email,
+        string? department,
+        string? title,
+        string? company,
+        string? office,
+        string? phoneNumber,
+        string? description,
+        bool mustChangePasswordOnNextLogon,
+        bool accountEnabled,
+        bool passwordNeverExpires,
+        IEnumerable<string>? initialGroups,
+        CancellationToken cancellationToken = default)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                _logger.LogInformation("Creating new user: {Username}", username);
+
+                using var context = GetPrincipalContext();
+                
+                // Check if user already exists
+                using var existingUser = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
+                if (existingUser != null)
+                {
+                    return Result.Failure<ADUser>($"User '{username}' already exists");
+                }
+
+                // Determine container/OU
+                PrincipalContext? containerContext = null;
+                if (!string.IsNullOrWhiteSpace(organizationalUnit))
+                {
+                    var containerPath = organizationalUnit.StartsWith(_config.LdapPath, StringComparison.OrdinalIgnoreCase)
+                        ? organizationalUnit
+                        : $"{_config.LdapPath}/{organizationalUnit}";
+                    try
+                    {
+                        ContextOptions options = ContextOptions.Negotiate;
+                        if (_config.UseSSL)
+                        {
+                            options |= ContextOptions.SecureSocketLayer;
+                        }
+                        containerContext = new PrincipalContext(
+                            ContextType.Domain,
+                            string.IsNullOrWhiteSpace(_config.LdapServer) ? _config.Domain : _config.LdapServer,
+                            containerPath,
+                            options,
+                            !string.IsNullOrWhiteSpace(_config.Username) && !string.IsNullOrWhiteSpace(_config.Password) ? _config.Username : null,
+                            !string.IsNullOrWhiteSpace(_config.Username) && !string.IsNullOrWhiteSpace(_config.Password) ? _config.Password : null);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to create context for OU {OU}, falling back to default", organizationalUnit);
+                        containerContext = null;
+                    }
+                }
+
+                using var targetContext = containerContext ?? context;
+                
+                // Create new user
+                using var newUser = new UserPrincipal(targetContext, username, password, accountEnabled)
+                {
+                    GivenName = firstName,
+                    Surname = lastName,
+                    DisplayName = !string.IsNullOrWhiteSpace(displayName) ? displayName : $"{firstName} {lastName}".Trim(),
+                    Name = !string.IsNullOrWhiteSpace(displayName) ? displayName : $"{firstName} {lastName}".Trim()
+                };
+                
+                if (!string.IsNullOrWhiteSpace(email))
+                    newUser.EmailAddress = email;
+                if (!string.IsNullOrWhiteSpace(description))
+                    newUser.Description = description;
+                
+                // Set password options
+                if (mustChangePasswordOnNextLogon)
+                {
+                    newUser.ExpirePasswordNow();
+                }
+                
+                if (passwordNeverExpires)
+                {
+                    newUser.PasswordNeverExpires = true;
+                }
+                
+                newUser.Save();
+
+                // Set additional properties via DirectoryEntry for better control
+                try
+                {
+                    using var entry = newUser.GetUnderlyingObject() as DirectoryEntry;
+                    if (entry != null)
+                    {
+                        if (!string.IsNullOrWhiteSpace(department))
+                            entry.Properties["department"].Value = department;
+                        if (!string.IsNullOrWhiteSpace(title))
+                            entry.Properties["title"].Value = title;
+                        if (!string.IsNullOrWhiteSpace(company))
+                            entry.Properties["company"].Value = company;
+                        if (!string.IsNullOrWhiteSpace(office))
+                            entry.Properties["physicalDeliveryOfficeName"].Value = office;
+                        if (!string.IsNullOrWhiteSpace(phoneNumber))
+                            entry.Properties["telephoneNumber"].Value = phoneNumber;
+                        
+                        entry.CommitChanges();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to set additional properties for user {Username}", username);
+                    // Continue - user was created, just some optional properties failed
+                }
+
+                // Add user to initial groups
+                if (initialGroups != null && initialGroups.Any())
+                {
+                    foreach (var groupName in initialGroups)
+                    {
+                        try
+                        {
+                            using var group = GroupPrincipal.FindByIdentity(context, IdentityType.Name, groupName);
+                            if (group != null && !group.Members.Contains(newUser))
+                            {
+                                group.Members.Add(newUser);
+                                group.Save();
+                                _logger.LogInformation("Added user {Username} to group {GroupName}", username, groupName);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to add user {Username} to group {GroupName}", username, groupName);
+                            // Continue - don't fail user creation if group add fails
+                        }
+                    }
+                }
+
+                // Retrieve created user to map to ADUser
+                using var createdUser = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
+                if (createdUser == null)
+                {
+                    return Result.Failure<ADUser>("User was created but could not be retrieved");
+                }
+
+                var adUser = MapUserPrincipalToADUser(createdUser);
+                _logger.LogInformation("User {Username} created successfully", username);
+                return Result.Success(adUser, "User created successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating user: {Username}", username);
+                return Result.Failure<ADUser>($"Failed to create user: {ex.Message}");
             }
         }, cancellationToken);
     }

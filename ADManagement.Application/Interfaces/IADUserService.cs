@@ -59,6 +59,11 @@ public interface IADUserService
     Task<Result> UnlockUserAsync(string username, CancellationToken cancellationToken = default);
     
     /// <summary>
+    /// Creates a new user in Active Directory
+    /// </summary>
+    Task<Result<ADUserDto>> CreateUserAsync(DTOs.CreateUserRequest request, CancellationToken cancellationToken = default);
+    
+    /// <summary>
     /// Gets groups that a user is a member of
     /// </summary>
     Task<Result<IEnumerable<string>>> GetUserGroupsAsync(string username, CancellationToken cancellationToken = default);
