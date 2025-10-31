@@ -69,20 +69,17 @@ public class DialogService : IDialogService
 
     public string? ShowFolderBrowserDialog(string description = "Select Folder")
     {
-        // Using Windows Forms FolderBrowserDialog
-        using var dialog = new System.Windows.Forms.FolderBrowserDialog
+        var dialog = new OpenFolderDialog
         {
-            Description = description,
-            ShowNewFolderButton = true,
-            UseDescriptionForTitle = true
+            Title = "Select Folder",
+            InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
         };
-
-        var result = dialog.ShowDialog();
-        if (result == System.Windows.Forms.DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
+        
+        if (dialog.ShowDialog() == true)
         {
-            return dialog.SelectedPath;
+            return dialog.FolderName;
         }
-
+        
         return null;
     }
 
