@@ -17,6 +17,9 @@ public partial class App : System.Windows.Application
 {
     private IHost? _host;
 
+    // Expose the application's service provider for resolving windows/viewmodels from code-behind
+    public static IServiceProvider? Services => Current is App app ? app._host?.Services : null;
+
     public App()
     {
         // Configure Serilog
@@ -97,7 +100,7 @@ public partial class App : System.Windows.Application
                 services.AddTransient<ExportViewModel>();
                 services.AddTransient<SettingsViewModel>();
 
-                // Add Main Window (Singleton)
-                services.AddSingleton<MainWindow>();
+                // Add Windows (Transient)
+                services.AddTransient<MainWindow>();
             });
 }

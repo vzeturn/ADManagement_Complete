@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.DirectoryServices;
 using System.DirectoryServices.AccountManagement;
 using ADManagement.Application.Configuration;
+using System.Text;
 using ADManagement.Domain.Common;
 using ADManagement.Domain.Entities;
 using ADManagement.Domain.Exceptions;
@@ -17,6 +19,8 @@ public class ADRepository : IADRepository
 {
     private readonly ADConfiguration _config;
     private readonly ILogger<ADRepository> _logger;
+    // Simple in-memory cache for search results to reduce repeated AD queries
+    private static readonly ConcurrentDictionary<string, (DateTime Expire, List<ADUser> Users)> _searchCache = new();
 
     public ADRepository(ADConfiguration config, ILogger<ADRepository> logger)
     {
@@ -211,36 +215,92 @@ public class ADRepository : IADRepository
             {
                 _logger.LogInformation("Searching users with term: {SearchTerm}", searchTerm);
 
-                using var context = GetPrincipalContext();
-
-                // Search by username
-                using var searchUser = new UserPrincipal(context)
+                // Return cached result when available
+                if (!string.IsNullOrWhiteSpace(searchTerm) && _config.SearchCacheSeconds > 0)
                 {
-                    SamAccountName = $"*{searchTerm}*"
-                };
-                using var searcher = new PrincipalSearcher(searchUser);
-
-                var users = new List<ADUser>();
-                var results = searcher.FindAll();
-
-                foreach (UserPrincipal user in results)
-                {
-                    if (user != null)
+                    var cacheKey = $"search:{_config.DefaultSearchOU}:{_config.PageSize}:{searchTerm}".ToLowerInvariant();
+                    if (_searchCache.TryGetValue(cacheKey, out var entryCached))
                     {
-                        try
+                        if (DateTime.UtcNow < entryCached.Expire)
                         {
-                            users.Add(MapUserPrincipalToADUser(user));
+                            _logger.LogInformation("Returning cached search results for term '{SearchTerm}'", searchTerm);
+                            return Result.Success<IEnumerable<ADUser>>(entryCached.Users, $"Found {entryCached.Users.Count} users (cached)");
                         }
-                        catch (Exception ex)
+                        else
                         {
-                            _logger.LogWarning(ex, "Failed to map user: {Username}", user.SamAccountName);
-                        }
-                        finally
-                        {
-                            user.Dispose();
+                            _searchCache.TryRemove(cacheKey, out _);
                         }
                     }
                 }
+
+                // Create DirectoryEntry with credentials if provided to avoid anonymous/incorrect binds
+                    AuthenticationTypes authType = AuthenticationTypes.None;
+                    if (_config.UseSSL)
+                    {
+                        authType |= AuthenticationTypes.SecureSocketsLayer;
+                    }
+                    authType |= AuthenticationTypes.Secure;
+
+                    // Build DirectoryEntry with credentials if provided
+                    // Prepare username for DirectoryEntry: prefer DOMAIN\username if not already specified
+                    string ldapUsername = _config.Username ?? string.Empty;
+                    if (!string.IsNullOrWhiteSpace(ldapUsername) && !ldapUsername.Contains("\\") && !ldapUsername.Contains("@") && !string.IsNullOrWhiteSpace(_config.Domain))
+                    {
+                        ldapUsername = $"{_config.Domain}\\{ldapUsername}";
+                    }
+
+                    // If DefaultSearchOU provided, scope the entry to that OU to reduce search domain
+                    string ldapPath = string.IsNullOrWhiteSpace(_config.DefaultSearchOU)
+                        ? _config.LdapPath
+                        : $"{_config.LdapPath}/{_config.DefaultSearchOU}";
+
+                    var entry = !string.IsNullOrWhiteSpace(ldapUsername) && !string.IsNullOrWhiteSpace(_config.Password)
+                        ? new DirectoryEntry(ldapPath, ldapUsername, _config.Password, authType)
+                        : new DirectoryEntry(ldapPath);
+
+                    var users = new List<ADUser>();
+
+                    // Use explicit using blocks to avoid compiler issues with declarations in embedded statements
+                    using (entry)
+                    {
+                        using (var searcher = new DirectorySearcher(entry))
+                        {
+                            // Escape search term to prevent LDAP filter injection and malformed queries
+                            var escaped = EscapeLdapFilter(searchTerm);
+                            searcher.Filter = $"(&(objectClass=user)(objectCategory=person)(|(sAMAccountName=*{escaped}*)(displayName=*{escaped}*)(mail=*{escaped}*)(department=*{escaped}*)))";
+
+                            // Limit size/page to reasonable amount and set server time limit
+                            searcher.PageSize = _config.PageSize;
+                            searcher.ServerTimeLimit = TimeSpan.FromSeconds(_config.TimeoutSeconds);
+                            searcher.SizeLimit = _config.PageSize; // cap results returned
+
+                            // Only load minimal properties needed for list view to speed up queries
+                            searcher.PropertiesToLoad.Clear();
+                            searcher.PropertiesToLoad.AddRange(new[] { "sAMAccountName", "displayName", "mail", "department" });
+
+                            var results = searcher.FindAll();
+
+                            foreach (SearchResult result in results)
+                            {
+                                try
+                                {
+                                    users.Add(MapSearchResultToADUser(result));
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogWarning(ex, "Failed to map user from search result");
+                                }
+                            }
+                        }
+
+                    // Cache results briefly to speed up repeated queries
+                    if (!string.IsNullOrWhiteSpace(searchTerm) && _config.SearchCacheSeconds > 0)
+                    {
+                        var cacheKey = $"search:{_config.DefaultSearchOU}:{_config.PageSize}:{searchTerm}".ToLowerInvariant();
+                        var expire = DateTime.UtcNow.AddSeconds(_config.SearchCacheSeconds);
+                        _searchCache[cacheKey] = (expire, users);
+                    }
+                    }
 
                 _logger.LogInformation("Found {Count} users matching search term", users.Count);
                 return Result.Success<IEnumerable<ADUser>>(users, $"Found {users.Count} users");
@@ -862,6 +922,27 @@ public class ADRepository : IADRepository
         {
             return null;
         }
+    }
+
+    // Escape special characters in LDAP search filters to avoid malformed filters or injection
+    private string EscapeLdapFilter(string input)
+    {
+        if (string.IsNullOrEmpty(input)) return string.Empty;
+
+        var sb = new StringBuilder();
+        foreach (var c in input)
+        {
+            switch (c)
+            {
+                case '\\': sb.Append("\\5c"); break;
+                case '*': sb.Append("\\2a"); break;
+                case '(' : sb.Append("\\28"); break;
+                case ')' : sb.Append("\\29"); break;
+                case '\0': sb.Append("\\00"); break;
+                default: sb.Append(c); break;
+            }
+        }
+        return sb.ToString();
     }
 
     #endregion

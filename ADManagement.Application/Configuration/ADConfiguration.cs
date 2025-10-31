@@ -51,6 +51,11 @@ public class ADConfiguration
     /// Default OU path for searches (optional)
     /// </summary>
     public string DefaultSearchOU { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Cache duration in seconds for search results (0 = disabled)
+    /// </summary>
+    public int SearchCacheSeconds { get; set; } = 30;
     
     /// <summary>
     /// Gets the LDAP path
