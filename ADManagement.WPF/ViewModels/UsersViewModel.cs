@@ -42,7 +42,7 @@ public partial class UsersViewModel : ObservableObject
         _logger = logger;
 
         // Load users on initialization
-        _ = LoadUsersAsync();
+        //_ = LoadUsersAsync();
     }
 
     [RelayCommand]
