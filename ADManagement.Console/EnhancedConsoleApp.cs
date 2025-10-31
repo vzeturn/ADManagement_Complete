@@ -68,6 +68,9 @@ public class EnhancedConsoleApp
                     case "7":
                         await ViewLogsAsync();
                         break;
+                    case "8":
+                        await ManageUserGroupsAsync();
+                        break;
                     case "0":
                         System.Console.WriteLine("\n👋 Goodbye!");
                         return;
@@ -121,6 +124,7 @@ public class EnhancedConsoleApp
         System.Console.WriteLine("  4. Export All Users to Excel");
         System.Console.WriteLine("  5. Search Users");
         System.Console.WriteLine("  6. Get User Details");
+        System.Console.WriteLine("  8. Manage User Groups");
 
         System.Console.WriteLine("\n📝 SYSTEM");
         System.Console.WriteLine("  7. View Recent Logs");
@@ -561,5 +565,157 @@ public class EnhancedConsoleApp
             
         System.Console.WriteLine(value);
         System.Console.ResetColor();
+    }
+
+    private async Task ManageUserGroupsAsync()
+    {
+        System.Console.Clear();
+        System.Console.WriteLine("╔══════════════════════════════════════════════════════════════╗");
+        System.Console.WriteLine("║                    MANAGE USER GROUPS                         ║");
+        System.Console.WriteLine("╚══════════════════════════════════════════════════════════════╝\n");
+
+        System.Console.Write("Enter username: ");
+        var username = System.Console.ReadLine();
+
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            System.Console.WriteLine("❌ Username cannot be empty.");
+            return;
+        }
+
+        bool managing = true;
+        while (managing)
+        {
+            System.Console.Clear();
+            System.Console.WriteLine($"📋 Group Management for User: {username}\n");
+            System.Console.WriteLine("1. View User's Groups");
+            System.Console.WriteLine("2. Add User to Group");
+            System.Console.WriteLine("3. Remove User from Group");
+            System.Console.WriteLine("0. Back to Main Menu");
+
+            System.Console.Write("\n👉 Select an option: ");
+            var choice = System.Console.ReadLine()?.Trim();
+
+            switch (choice)
+            {
+                case "1":
+                    await ViewUserGroupsAsync(username);
+                    break;
+                case "2":
+                    await AddUserToGroupAsync(username);
+                    break;
+                case "3":
+                    await RemoveUserFromGroupAsync(username);
+                    break;
+                case "0":
+                    managing = false;
+                    break;
+                default:
+                    System.Console.WriteLine("\n❌ Invalid option. Please try again.");
+                    break;
+            }
+
+            if (managing)
+            {
+                System.Console.WriteLine("\nPress any key to continue...");
+                System.Console.ReadKey();
+            }
+        }
+    }
+
+    private async Task ViewUserGroupsAsync(string username)
+    {
+        System.Console.WriteLine($"\n🔍 Fetching groups for user '{username}'...");
+        
+        var result = await _userService.GetUserGroupsAsync(username);
+        
+        if (result.IsSuccess && result.Value != null)
+        {
+            var groups = result.Value.ToList();
+            System.Console.ForegroundColor = ConsoleColor.Green;
+            System.Console.WriteLine($"\n✅ User is member of {groups.Count} group(s):\n");
+            System.Console.ResetColor();
+            
+            if (groups.Any())
+            {
+                System.Console.WriteLine(new string('─', 64));
+                foreach (var group in groups)
+                {
+                    System.Console.WriteLine($"  👥 {group}");
+                }
+                System.Console.WriteLine(new string('─', 64));
+            }
+            else
+            {
+                System.Console.WriteLine("User is not a member of any groups.");
+            }
+        }
+        else
+        {
+            System.Console.ForegroundColor = ConsoleColor.Red;
+            System.Console.WriteLine($"\n❌ Failed to fetch groups: {result.Message}");
+            System.Console.ResetColor();
+        }
+    }
+
+    private async Task AddUserToGroupAsync(string username)
+    {
+        System.Console.Write("\nEnter group name to add user to: ");
+        var groupName = System.Console.ReadLine();
+
+        if (string.IsNullOrWhiteSpace(groupName))
+        {
+            System.Console.WriteLine("❌ Group name cannot be empty.");
+            return;
+        }
+
+        System.Console.WriteLine($"\n➕ Adding user '{username}' to group '{groupName}'...");
+        
+        var result = await _userService.AddUserToGroupAsync(username, groupName);
+
+        if (result.IsSuccess)
+        {
+            System.Console.ForegroundColor = ConsoleColor.Green;
+            System.Console.WriteLine($"\n✅ {result.Message}");
+            System.Console.ResetColor();
+        }
+        else
+        {
+            System.Console.ForegroundColor = ConsoleColor.Red;
+            System.Console.WriteLine($"\n❌ Failed: {result.Message}");
+            System.Console.ResetColor();
+        }
+    }
+
+    private async Task RemoveUserFromGroupAsync(string username)
+    {
+        // First show current groups
+        await ViewUserGroupsAsync(username);
+
+        System.Console.Write("\nEnter group name to remove user from: ");
+        var groupName = System.Console.ReadLine();
+
+        if (string.IsNullOrWhiteSpace(groupName))
+        {
+            System.Console.WriteLine("❌ Group name cannot be empty.");
+            return;
+        }
+
+        System.Console.WriteLine($"\n➖ Removing user '{username}' from group '{groupName}'...");
+        
+        var result = await _userService.RemoveUserFromGroupAsync(username, groupName);
+
+        if (result.IsSuccess)
+        {
+            System.Console.ForegroundColor = ConsoleColor.Green;
+            System.Console.WriteLine($"\n✅ {result.Message}");
+            System.Console.ResetColor();
+        }
+        else
+        {
+            System.Console.ForegroundColor = ConsoleColor.Red;
+            System.Console.WriteLine($"\n❌ Failed: {result.Message}");
+            System.Console.ResetColor();
+        }
     }
 }

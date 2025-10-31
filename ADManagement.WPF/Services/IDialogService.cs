@@ -54,4 +54,10 @@ public interface IDialogService
     /// </summary>
     /// <returns>User input or null if cancelled</returns>
     string? ShowInputDialog(string message, string title = "Input", string defaultValue = "");
+
+    /// <summary>
+    /// Shows a credentials dialog for domain authentication
+    /// </summary>
+    /// <returns>A tuple of username and password, or null if cancelled</returns>
+    (string? Username, string? Password)? ShowCredentialsDialog(string message = "Enter domain credentials", string title = "Credentials");
 }

@@ -63,12 +63,18 @@
         <!-- Users DataGrid -->
         <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,8">
             <Grid>
-                <DataGrid ItemsSource="{Binding Users}"
-                          SelectedItem="{Binding SelectedUser}"
+                <DataGrid x:Name="UsersDataGrid" ItemsSource="{Binding Users}"
+                          SelectedItem="{Binding SelectedUser, Mode=TwoWay}"
                           Style="{StaticResource ModernDataGrid}"
-                          Visibility="{Binding IsLoading, Converter={StaticResource InverseBoolToVisibilityConverter}}">
+                          Visibility="{Binding IsLoading, Converter={StaticResource InverseBoolToVisibilityConverter}}"
+                          AutoGenerateColumns="False">
+                    <DataGrid.Resources>
+                        <Style TargetType="DataGridRow">
+                            <EventSetter Event="MouseDoubleClick" Handler="DataGridRow_MouseDoubleClick"/>
+                        </Style>
+                    </DataGrid.Resources>
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="Username" Binding="{Binding Username}" Width="150"/>
+                        <DataGridTextColumn Header="Username" Binding="{Binding SamAccountName}" Width="150"/>
                         <DataGridTextColumn Header="Display Name" Binding="{Binding DisplayName}" Width="200"/>
                         <DataGridTextColumn Header="Email" Binding="{Binding Email}" Width="250"/>
                         <DataGridTextColumn Header="Department" Binding="{Binding Department}" Width="150"/>

@@ -223,4 +223,36 @@ public class ADUserService : IADUserService
         
         return await _repository.RemoveUserFromGroupAsync(username, groupName, cancellationToken);
     }
+    
+    public async Task<Result<IEnumerable<ADGroupDto>>> GetAllGroupsAsync(CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation("Getting all groups from repository");
+        var result = await _repository.GetAllGroupsAsync(cancellationToken);
+        if (!result.IsSuccess || result.Value == null)
+        {
+            return Result.Failure<IEnumerable<ADGroupDto>>(result.Message, result.Errors);
+        }
+
+        var dtos = result.Value.ToDto();
+        return Result.Success(dtos, result.Message);
+    }
+    
+    public async Task<Result<IEnumerable<ADGroupDto>>> SearchGroupsAsync(string searchTerm, CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation("Searching groups: {SearchTerm}", searchTerm);
+
+        if (string.IsNullOrWhiteSpace(searchTerm))
+        {
+            return Result.Failure<IEnumerable<ADGroupDto>>("Search term cannot be empty");
+        }
+
+        var result = await _repository.SearchGroupsAsync(searchTerm, cancellationToken);
+        if (!result.IsSuccess || result.Value == null)
+        {
+            return Result.Failure<IEnumerable<ADGroupDto>>(result.Message, result.Errors);
+        }
+
+        var dtos = result.Value.ToDto();
+        return Result.Success(dtos, result.Message);
+    }
 }

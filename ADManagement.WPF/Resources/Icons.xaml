@@ -1,0 +1,53 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Simple vector icons as DrawingImage resources -->
+    <DrawingImage x:Key="IconUsers">
+        <DrawingImage.Drawing>
+            <GeometryDrawing Brush="{StaticResource PrimaryBrush}">
+                <GeometryDrawing.Geometry>
+                    <Geometry>F1 M 12,2 C 9.79086,2 8,3.79086 8,6 C 8,8.20914 9.79086,10 12,10 C 14.2091,10 16,8.20914 16,6 C 16,3.79086 14.2091,2 12,2 Z M 4,18 C 4,14.6863 7.58172,12 12,12 C 16.4183,12 20,14.6863 20,18 L 4,18 Z</Geometry>
+                </GeometryDrawing.Geometry>
+            </GeometryDrawing>
+        </DrawingImage.Drawing>
+    </DrawingImage>
+
+    <DrawingImage x:Key="IconGroups">
+        <DrawingImage.Drawing>
+            <GeometryDrawing Brush="{StaticResource PrimaryBrush}">
+                <GeometryDrawing.Geometry>
+                    <Geometry>F1 M 6,10 C 3.79086,10 2,11.7909 2,14 L 2,16 L 10,16 L 10,14 C 10,11.7909 8.20914,10 6,10 Z M 18,10 C 15.7909,10 14,11.7909 14,14 L 14,16 L 22,16 L 22,14 C 22,11.7909 20.2091,10 18,10 Z M 12,2 C 9.79086,2 8,3.79086 8,6 C 8,8.20914 9.79086,10 12,10 C 14.2091,10 16,8.20914 16,6 C 16,3.79086 14.2091,2 12,2 Z</Geometry>
+                </GeometryDrawing.Geometry>
+            </GeometryDrawing>
+        </DrawingImage.Drawing>
+    </DrawingImage>
+
+    <DrawingImage x:Key="IconExport">
+        <DrawingImage.Drawing>
+            <GeometryDrawing Brush="{StaticResource PrimaryBrush}">
+                <GeometryDrawing.Geometry>
+                    <Geometry>F1 M4,4 L20,4 L20,20 L4,20 Z M9,8 L9,12 L7,12 L12,17 L17,12 L15,12 L15,8 Z</Geometry>
+                </GeometryDrawing.Geometry>
+            </GeometryDrawing>
+        </DrawingImage.Drawing>
+    </DrawingImage>
+
+    <DrawingImage x:Key="IconSettings">
+        <DrawingImage.Drawing>
+            <GeometryDrawing Brush="{StaticResource PrimaryBrush}">
+                <GeometryDrawing.Geometry>
+                    <Geometry>F1 M12,8 A4,4 0 1,0 12,16 A4,4 0 1,0 12,8 Z M19.4,13 C19.5,12.4 19.5,11.8 19.4,11.2 L21.6,9.6 L19.4,6.4 L16.8,7.2 C16.1,6.6 15.3,6.2 14.4,6 L14,3 H10 L9.6,6 C8.7,6.2 7.9,6.6 7.2,7.2 L4.6,6.4 L2.4,9.6 L4.6,11.2 C4.5,11.8 4.5,12.4 4.6,13 L2.4,14.6 L4.6,17.8 L7.2,17 C7.9,17.6 8.7,18 9.6,18.2 L10,21 H14 L14.4,18.2 C15.3,18 16.1,17.6 16.8,17 L19.4,17.8 L21.6,14.6 Z</Geometry>
+                </GeometryDrawing.Geometry>
+            </GeometryDrawing>
+        </DrawingImage.Drawing>
+    </DrawingImage>
+
+    <DrawingImage x:Key="IconAbout">
+        <DrawingImage.Drawing>
+            <GeometryDrawing Brush="{StaticResource PrimaryBrush}">
+                <GeometryDrawing.Geometry>
+                    <Geometry>F1 M12,2 C6.48,2 2,6.48 2,12 C2,17.52 6.48,22 12,22 C17.52,22 22,17.52 22,12 C22,6.48 17.52,2 12,2 Z M11,10 H13 V17 H11 Z M11,7 H13 V9 H11 Z</Geometry>
+                </GeometryDrawing.Geometry>
+            </GeometryDrawing>
+        </DrawingImage.Drawing>
+    </DrawingImage>
+</ResourceDictionary>

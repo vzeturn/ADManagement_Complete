@@ -9,27 +9,33 @@
         Title="{Binding Title}" Height="700" Width="1200"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource BackgroundBrush}">
-    
+
     <Window.Resources>
-        <!-- DataTemplate for UsersViewModel -->
-        <DataTemplate DataType="{x:Type vm:UsersViewModel}">
-            <views:UsersView/>
-        </DataTemplate>
-        
-        <!-- DataTemplate for GroupsViewModel -->
-        <DataTemplate DataType="{x:Type vm:GroupsViewModel}">
-            <views:GroupsView/>
-        </DataTemplate>
-        
-        <!-- DataTemplate for ExportViewModel -->
-        <DataTemplate DataType="{x:Type vm:ExportViewModel}">
-            <views:ExportView/>
-        </DataTemplate>
-        
-        <!-- DataTemplate for SettingsViewModel -->
-        <DataTemplate DataType="{x:Type vm:SettingsViewModel}">
-            <views:SettingsView/>
-        </DataTemplate>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/Resources/Icons.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- DataTemplate for UsersViewModel -->
+            <DataTemplate DataType="{x:Type vm:UsersViewModel}">
+                <views:UsersView/>
+            </DataTemplate>
+
+            <!-- DataTemplate for GroupsViewModel -->
+            <DataTemplate DataType="{x:Type vm:GroupsViewModel}">
+                <views:GroupsView/>
+            </DataTemplate>
+
+            <!-- DataTemplate for ExportViewModel -->
+            <DataTemplate DataType="{x:Type vm:ExportViewModel}">
+                <views:ExportView/>
+            </DataTemplate>
+
+            <!-- DataTemplate for SettingsViewModel -->
+            <DataTemplate DataType="{x:Type vm:SettingsViewModel}">
+                <views:SettingsView/>
+            </DataTemplate>
+        </ResourceDictionary>
     </Window.Resources>
 
     <Grid>
@@ -54,32 +60,57 @@
 
                 <!-- Navigation Buttons -->
                 <StackPanel Margin="0,16,0,0">
-                    <Button Content="👥 Users" Height="48" Margin="8,0"
+                    <Button Height="48" Margin="8,0"
                             Style="{StaticResource SecondaryButton}"
                             Command="{Binding NavigateToUsersCommand}"
-                            HorizontalContentAlignment="Left" Padding="16,0"/>
+                            HorizontalContentAlignment="Left" Padding="12,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Image Source="{StaticResource IconUsers}" Width="20" Height="20"/>
+                            <TextBlock Text="Users" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                     
-                    <Button Content="👪 Groups" Height="48" Margin="8,8,8,0"
+                    <Button Height="48" Margin="8,8,8,0"
                             Style="{StaticResource SecondaryButton}"
                             Command="{Binding NavigateToGroupsCommand}"
-                            HorizontalContentAlignment="Left" Padding="16,0"/>
+                            HorizontalContentAlignment="Left" Padding="12,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Image Source="{StaticResource IconGroups}" Width="20" Height="20"/>
+                            <TextBlock Text="Groups" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                     
-                    <Button Content="📊 Export" Height="48" Margin="8,8,8,0"
+                    <Button Height="48" Margin="8,8,8,0"
                             Style="{StaticResource SecondaryButton}"
                             Command="{Binding NavigateToExportCommand}"
-                            HorizontalContentAlignment="Left" Padding="16,0"/>
+                            HorizontalContentAlignment="Left" Padding="12,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Image Source="{StaticResource IconExport}" Width="20" Height="20"/>
+                            <TextBlock Text="Export" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                     
-                    <Button Content="⚙️ Settings" Height="48" Margin="8,8,8,0"
+                    <Button Height="48" Margin="8,8,8,0"
                             Style="{StaticResource SecondaryButton}"
                             Command="{Binding NavigateToSettingsCommand}"
-                            HorizontalContentAlignment="Left" Padding="16,0"/>
+                            HorizontalContentAlignment="Left" Padding="12,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Image Source="{StaticResource IconSettings}" Width="20" Height="20"/>
+                            <TextBlock Text="Settings" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                     
                     <Separator Margin="8,16"/>
                     
-                    <Button Content="ℹ️ About" Height="48" Margin="8,8,8,0"
+                    <Button Height="48" Margin="8,8,8,0"
                             Style="{StaticResource SecondaryButton}"
                             Command="{Binding ShowAboutCommand}"
-                            HorizontalContentAlignment="Left" Padding="16,0"/>
+                            HorizontalContentAlignment="Left" Padding="12,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Image Source="{StaticResource IconAbout}" Width="20" Height="20"/>
+                            <TextBlock Text="About" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
             </StackPanel>
         </Border>

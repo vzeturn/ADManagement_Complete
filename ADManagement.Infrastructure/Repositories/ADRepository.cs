@@ -1,11 +1,16 @@
+using System.Collections.Concurrent;
 using System.DirectoryServices;
 using System.DirectoryServices.AccountManagement;
+using System.DirectoryServices.Protocols;
 using ADManagement.Application.Configuration;
+using System.Text;
 using ADManagement.Domain.Common;
 using ADManagement.Domain.Entities;
 using ADManagement.Domain.Exceptions;
 using ADManagement.Domain.Interfaces;
 using Microsoft.Extensions.Logging;
+using System.Net;
+using System.Net.Sockets;
 
 namespace ADManagement.Infrastructure.Repositories;
 
@@ -17,6 +22,8 @@ public class ADRepository : IADRepository
 {
     private readonly ADConfiguration _config;
     private readonly ILogger<ADRepository> _logger;
+    // Simple in-memory cache for search results to reduce repeated AD queries
+    private static readonly ConcurrentDictionary<string, (DateTime Expire, List<ADUser> Users)> _searchCache = new();
 
     public ADRepository(ADConfiguration config, ILogger<ADRepository> logger)
     {
@@ -28,16 +35,49 @@ public class ADRepository : IADRepository
 
     public async Task<Result> TestConnectionAsync(CancellationToken cancellationToken = default)
     {
+        // Fast path: do a quick network-level check (DNS resolution + TCP connect) to fail fast
+        try
+        {
+            var targetHost = string.IsNullOrWhiteSpace(_config.LdapServer) ? _config.Domain : _config.LdapServer;
+            var port = _config.Port <= 0 ? 389 : _config.Port;
+
+            _logger.LogInformation("Running quick network test to {Host}:{Port}", targetHost, port);
+
+            var quickOk = await TryTcpConnectAsync(targetHost, port, TimeSpan.FromSeconds(Math.Max(3, _config.TimeoutSeconds)));
+            if (!quickOk)
+            {
+                _logger.LogWarning("Quick network test failed for {Host}:{Port}", targetHost, port);
+                return Result.Failure($"Network connection to {targetHost}:{port} failed. Check DNS/network/firewall.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Quick connection test threw an exception");
+            return Result.Failure($"Quick connection test failed: {ex.Message}");
+        }
+
+        // If network quick test passed, attempt an AD bind using PrincipalContext (may still require credentials)
         return await Task.Run(() =>
         {
             try
             {
                 using var context = GetPrincipalContext();
+                // Minimal AD operation to verify bind and basic query
                 using var searcher = new PrincipalSearcher(new UserPrincipal(context));
                 _ = searcher.FindAll().Take(1).ToList();
 
                 _logger.LogInformation("Successfully connected to Active Directory: {Domain}", _config.Domain);
                 return Result.Success("Connection successful");
+            }
+            catch (PrincipalServerDownException ex)
+            {
+                _logger.LogError(ex, "Failed to connect to Active Directory - server down");
+                return Result.Failure("Could not contact the LDAP server. Check server address, port and network connectivity.");
+            }
+            catch (LdapException ex)
+            {
+                _logger.LogError(ex, "LDAP error during connection test");
+                return Result.Failure($"LDAP error: {ex.Message}");
             }
             catch (Exception ex)
             {
@@ -45,6 +85,55 @@ public class ADRepository : IADRepository
                 return Result.Failure($"Connection failed: {ex.Message}");
             }
         }, cancellationToken);
+    }
+
+    // Try a TCP connect to host:port with timeout. Returns true if connected.
+    private static async Task<bool> TryTcpConnectAsync(string host, int port, TimeSpan timeout)
+    {
+        try
+        {
+            // Resolve host to avoid blocking on connect to wrong name
+            IPAddress[] addrs = null;
+            try
+            {
+                addrs = await Dns.GetHostAddressesAsync(host);
+            }
+            catch
+            {
+                // if DNS resolution fails, attempt to use host as-is in connect
+            }
+
+            var addresses = (addrs != null && addrs.Length > 0) ? addrs : new IPAddress[] { IPAddress.None };
+
+            foreach (var addr in addresses)
+            {
+                try
+                {
+                    using var client = new TcpClient();
+                    var connectTask = (addr == IPAddress.None)
+                        ? client.ConnectAsync(host, port)
+                        : client.ConnectAsync(addr, port);
+
+                    var cts = new CancellationTokenSource(timeout);
+                    var completed = await Task.WhenAny(connectTask, Task.Delay(Timeout.Infinite, cts.Token));
+                    if (completed == connectTask && client.Connected)
+                    {
+                        client.Close();
+                        return true;
+                    }
+                }
+                catch
+                {
+                    // try next address
+                }
+            }
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     #endregion
@@ -211,36 +300,92 @@ public class ADRepository : IADRepository
             {
                 _logger.LogInformation("Searching users with term: {SearchTerm}", searchTerm);
 
-                using var context = GetPrincipalContext();
-
-                // Search by username
-                using var searchUser = new UserPrincipal(context)
+                // Return cached result when available
+                if (!string.IsNullOrWhiteSpace(searchTerm) && _config.SearchCacheSeconds > 0)
                 {
-                    SamAccountName = $"*{searchTerm}*"
-                };
-                using var searcher = new PrincipalSearcher(searchUser);
-
-                var users = new List<ADUser>();
-                var results = searcher.FindAll();
-
-                foreach (UserPrincipal user in results)
-                {
-                    if (user != null)
+                    var cacheKey = $"search:{_config.DefaultSearchOU}:{_config.PageSize}:{searchTerm}".ToLowerInvariant();
+                    if (_searchCache.TryGetValue(cacheKey, out var entryCached))
                     {
-                        try
+                        if (DateTime.UtcNow < entryCached.Expire)
                         {
-                            users.Add(MapUserPrincipalToADUser(user));
+                            _logger.LogInformation("Returning cached search results for term '{SearchTerm}'", searchTerm);
+                            return Result.Success<IEnumerable<ADUser>>(entryCached.Users, $"Found {entryCached.Users.Count} users (cached)");
                         }
-                        catch (Exception ex)
+                        else
                         {
-                            _logger.LogWarning(ex, "Failed to map user: {Username}", user.SamAccountName);
-                        }
-                        finally
-                        {
-                            user.Dispose();
+                            _searchCache.TryRemove(cacheKey, out _);
                         }
                     }
                 }
+
+                // Create DirectoryEntry with credentials if provided to avoid anonymous/incorrect binds
+                    AuthenticationTypes authType = AuthenticationTypes.None;
+                    if (_config.UseSSL)
+                    {
+                        authType |= AuthenticationTypes.SecureSocketsLayer;
+                    }
+                    authType |= AuthenticationTypes.Secure;
+
+                    // Build DirectoryEntry with credentials if provided
+                    // Prepare username for DirectoryEntry: prefer DOMAIN\username if not already specified
+                    string ldapUsername = _config.Username ?? string.Empty;
+                    if (!string.IsNullOrWhiteSpace(ldapUsername) && !ldapUsername.Contains("\\") && !ldapUsername.Contains("@") && !string.IsNullOrWhiteSpace(_config.Domain))
+                    {
+                        ldapUsername = $"{_config.Domain}\\{ldapUsername}";
+                    }
+
+                    // If DefaultSearchOU provided, scope the entry to that OU to reduce search domain
+                    string ldapPath = string.IsNullOrWhiteSpace(_config.DefaultSearchOU)
+                        ? _config.LdapPath
+                        : $"{_config.LdapPath}/{_config.DefaultSearchOU}";
+
+                    var entry = !string.IsNullOrWhiteSpace(ldapUsername) && !string.IsNullOrWhiteSpace(_config.Password)
+                        ? new DirectoryEntry(ldapPath, ldapUsername, _config.Password, authType)
+                        : new DirectoryEntry(ldapPath);
+
+                    var users = new List<ADUser>();
+
+                    // Use explicit using blocks to avoid compiler issues with declarations in embedded statements
+                    using (entry)
+                    {
+                        using (var searcher = new DirectorySearcher(entry))
+                        {
+                            // Escape search term to prevent LDAP filter injection and malformed queries
+                            var escaped = EscapeLdapFilter(searchTerm);
+                            searcher.Filter = $"(&(objectClass=user)(objectCategory=person)(|(sAMAccountName=*{escaped}*)(displayName=*{escaped}*)(mail=*{escaped}*)(department=*{escaped}*)))";
+
+                            // Limit size/page to reasonable amount and set server time limit
+                            searcher.PageSize = _config.PageSize;
+                            searcher.ServerTimeLimit = TimeSpan.FromSeconds(_config.TimeoutSeconds);
+                            searcher.SizeLimit = _config.PageSize; // cap results returned
+
+                            // Only load minimal properties needed for list view to speed up queries
+                            searcher.PropertiesToLoad.Clear();
+                            searcher.PropertiesToLoad.AddRange(new[] { "sAMAccountName", "displayName", "mail", "department" });
+
+                            var results = searcher.FindAll();
+
+                            foreach (SearchResult result in results)
+                            {
+                                try
+                                {
+                                    users.Add(MapSearchResultToADUser(result));
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogWarning(ex, "Failed to map user from search result");
+                                }
+                            }
+                        }
+
+                    // Cache results briefly to speed up repeated queries
+                    if (!string.IsNullOrWhiteSpace(searchTerm) && _config.SearchCacheSeconds > 0)
+                    {
+                        var cacheKey = $"search:{_config.DefaultSearchOU}:{_config.PageSize}:{searchTerm}".ToLowerInvariant();
+                        var expire = DateTime.UtcNow.AddSeconds(_config.SearchCacheSeconds);
+                        _searchCache[cacheKey] = (expire, users);
+                    }
+                    }
 
                 _logger.LogInformation("Found {Count} users matching search term", users.Count);
                 return Result.Success<IEnumerable<ADUser>>(users, $"Found {users.Count} users");
@@ -413,24 +558,59 @@ public class ADRepository : IADRepository
             {
                 _logger.LogInformation("Retrieving groups for user: {Username}", username);
 
-                using var context = GetPrincipalContext();
-                using var user = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
-
-                if (user == null)
+                // Use DirectoryEntry + DirectorySearcher to read memberOf attribute directly which is much faster
+                AuthenticationTypes authType = AuthenticationTypes.None;
+                if (_config.UseSSL)
                 {
+                    authType |= AuthenticationTypes.SecureSocketsLayer;
+                }
+                authType |= AuthenticationTypes.Secure;
+
+                string ldapUsername = _config.Username ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(ldapUsername) && !ldapUsername.Contains("\\") && !ldapUsername.Contains("@") && !string.IsNullOrWhiteSpace(_config.Domain))
+                {
+                    ldapUsername = $"{_config.Domain}\\{ldapUsername}";
+                }
+
+                string ldapPath = string.IsNullOrWhiteSpace(_config.DefaultSearchOU)
+                    ? _config.LdapPath
+                    : $"{_config.LdapPath}/{_config.DefaultSearchOU}";
+
+                using var entry = !string.IsNullOrWhiteSpace(ldapUsername) && !string.IsNullOrWhiteSpace(_config.Password)
+                    ? new DirectoryEntry(ldapPath, ldapUsername, _config.Password, authType)
+                    : new DirectoryEntry(ldapPath);
+
+                using var searcher = new DirectorySearcher(entry)
+                {
+                    Filter = $"(&(objectClass=user)(sAMAccountName={EscapeLdapFilter(username)}))",
+                    PageSize = 1,
+                    SizeLimit = 1,
+                    ServerTimeLimit = TimeSpan.FromSeconds(_config.TimeoutSeconds)
+                };
+
+                searcher.PropertiesToLoad.Clear();
+                searcher.PropertiesToLoad.Add("memberOf");
+
+                var result = searcher.FindOne();
+
+                if (result == null)
+                {
+                    _logger.LogWarning("User not found: {Username}", username);
                     throw new UserNotFoundException(username);
                 }
 
                 var groups = new List<string>();
-                var groupCollection = user.GetGroups();
 
-                foreach (var group in groupCollection)
+                if (result.Properties.Contains("memberOf"))
                 {
-                    if (group?.Name != null)
+                    foreach (var val in result.Properties["memberOf"] )
                     {
-                        groups.Add(group.Name);
+                        var dn = val?.ToString();
+                        if (!string.IsNullOrWhiteSpace(dn))
+                        {
+                            groups.Add(GetNameFromDistinguishedName(dn));
+                        }
                     }
-                    group?.Dispose();
                 }
 
                 _logger.LogInformation("Retrieved {Count} groups for user {Username}", groups.Count, username);
@@ -546,6 +726,59 @@ public class ADRepository : IADRepository
         }, cancellationToken);
     }
 
+    public async Task<Result<IEnumerable<ADGroup>>> SearchGroupsAsync(string searchTerm, CancellationToken cancellationToken = default)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                _logger.LogInformation("Searching groups with term: {SearchTerm}", searchTerm);
+
+                using var entry = new DirectoryEntry(_config.LdapPath);
+                using var searcher = new DirectorySearcher(entry)
+                {
+                    Filter = $"(&(objectClass=group)(|(cn=*{EscapeLdapFilter(searchTerm)}*)(displayName=*{EscapeLdapFilter(searchTerm)}*)(description=*{EscapeLdapFilter(searchTerm)}*)))",
+                    PageSize = _config.PageSize,
+                    ServerTimeLimit = TimeSpan.FromSeconds(_config.TimeoutSeconds)
+                };
+
+                searcher.PropertiesToLoad.Clear();
+                searcher.PropertiesToLoad.AddRange(new[] { "cn", "displayName", "description", "distinguishedName", "groupType", "whenCreated", "whenChanged" });
+
+                var results = searcher.FindAll();
+                var groups = new List<ADGroup>();
+
+                foreach (SearchResult res in results)
+                {
+                    try
+                    {
+                        var gp = new ADGroup
+                        {
+                            Name = GetProperty(res, "cn"),
+                            DisplayName = GetProperty(res, "displayName"),
+                            Description = GetProperty(res, "description"),
+                            DistinguishedName = GetProperty(res, "distinguishedName")
+                        };
+
+                        groups.Add(gp);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to map group search result");
+                    }
+                }
+
+                _logger.LogInformation("Found {Count} groups for search term", groups.Count);
+                return Result.Success<IEnumerable<ADGroup>>(groups, $"Found {groups.Count} groups");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error searching groups");
+                return Result.Failure<IEnumerable<ADGroup>>($"Group search failed: {ex.Message}");
+            }
+        }, cancellationToken);
+    }
+
     #endregion
 
     #region Organizational Unit Operations
@@ -609,20 +842,39 @@ public class ADRepository : IADRepository
     {
         try
         {
-            if (!string.IsNullOrWhiteSpace(_config.Username) && !string.IsNullOrWhiteSpace(_config.Password))
+            // Prefer explicit LDAP server if configured to target a specific domain controller for consistency
+            var target = string.IsNullOrWhiteSpace(_config.LdapServer) ? _config.Domain : _config.LdapServer;
+            var container = string.IsNullOrWhiteSpace(_config.DefaultSearchOU) ? null : _config.DefaultSearchOU;
+
+            ContextOptions options = ContextOptions.Negotiate;
+            if (_config.UseSSL)
             {
-                return new PrincipalContext(
-                    ContextType.Domain,
-                    _config.Domain,
-                    _config.Username,
-                    _config.Password);
+                options |= ContextOptions.SecureSocketLayer;
             }
 
-            return new PrincipalContext(ContextType.Domain, _config.Domain);
+            if (!string.IsNullOrWhiteSpace(_config.Username) && !string.IsNullOrWhiteSpace(_config.Password))
+            {
+                _logger.LogDebug("Creating PrincipalContext to {Target} with explicit credentials", target);
+                return new PrincipalContext(ContextType.Domain, target, container, options, _config.Username, _config.Password);
+            }
+
+            _logger.LogDebug("Creating PrincipalContext to {Target} using current credentials", target);
+            return new PrincipalContext(ContextType.Domain, target, container, options);
+        }
+        catch (PrincipalServerDownException ex)
+        {
+            _logger.LogError(ex, "PrincipalContext failed - server down for target {DomainOrServer}", _config.LdapServer ?? _config.Domain);
+            // Provide a helpful message to caller
+            throw new PrincipalServerDownException("LDAP server is unavailable. Verify the server address, port and network connectivity.", ex);
+        }
+        catch (LdapException ex)
+        {
+            _logger.LogError(ex, "LDAP exception creating PrincipalContext");
+            throw;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to create PrincipalContext for domain: {Domain}", _config.Domain);
+            _logger.LogError(ex, "Unexpected error creating PrincipalContext");
             throw;
         }
     }
@@ -674,16 +926,24 @@ public class ADRepository : IADRepository
             adUser.MobileNumber = entry.Properties["mobile"].Value?.ToString() ?? string.Empty;
         }
 
-        // Get groups
+        // Get groups from DirectoryEntry memberOf which is much faster than enumerating GroupPrincipal objects
         try
         {
-            var groups = user.GetGroups();
-            adUser.MemberOf = groups.Select(g => g.Name ?? string.Empty).ToList();
+            var groups = new List<string>();
 
-            foreach (var group in groups)
+            if (entry != null && entry.Properties.Contains("memberOf"))
             {
-                group?.Dispose();
+                foreach (var val in entry.Properties["memberOf"] )
+                {
+                    var dn = val?.ToString();
+                    if (!string.IsNullOrWhiteSpace(dn))
+                    {
+                        groups.Add(GetNameFromDistinguishedName(dn));
+                    }
+                }
             }
+
+            adUser.MemberOf = groups;
         }
         catch (Exception ex)
         {
@@ -692,6 +952,28 @@ public class ADRepository : IADRepository
         }
 
         return adUser;
+    }
+
+    private string GetNameFromDistinguishedName(string dn)
+    {
+        // Extract the CN or first RDN value from a distinguished name: CN=Group Name,OU=... -> Group Name
+        if (string.IsNullOrWhiteSpace(dn)) return string.Empty;
+
+        try
+        {
+            var parts = dn.Split(',');
+            if (parts.Length == 0) return dn;
+
+            var rdn = parts[0];
+            var equalsIndex = rdn.IndexOf('=');
+            if (equalsIndex <= 0 || equalsIndex >= rdn.Length - 1) return rdn;
+
+            return rdn[(equalsIndex + 1)..].Trim();
+        }
+        catch
+        {
+            return dn;
+        }
     }
 
     private ADUser MapSearchResultToADUser(SearchResult result)
@@ -729,57 +1011,6 @@ public class ADRepository : IADRepository
             Description = GetProperty(result, "description"),
             MemberOf = GetMultiValueProperty(result, "memberOf")
         };
-    }
-
-    private ADGroup MapGroupPrincipalToADGroup(GroupPrincipal group)
-    {
-        using var entry = group.GetUnderlyingObject() as DirectoryEntry;
-
-        var adGroup = new ADGroup
-        {
-            Name = group.Name ?? string.Empty,
-            DisplayName = group.DisplayName ?? string.Empty,
-            Description = group.Description ?? string.Empty,
-            DistinguishedName = group.DistinguishedName ?? string.Empty
-        };
-
-        // Get group properties from DirectoryEntry
-        if (entry != null)
-        {
-            adGroup.GroupScope = entry.Properties["groupType"].Value?.ToString() ?? string.Empty;
-            adGroup.GroupType = entry.Properties["groupType"].Value?.ToString() ?? string.Empty;
-
-            var whenCreated = entry.Properties["whenCreated"].Value;
-            if (whenCreated is DateTime created)
-            {
-                adGroup.WhenCreated = created;
-            }
-
-            var whenChanged = entry.Properties["whenChanged"].Value;
-            if (whenChanged is DateTime changed)
-            {
-                adGroup.WhenChanged = changed;
-            }
-        }
-
-        // Get members
-        try
-        {
-            var members = group.Members;
-            adGroup.Members = members.Select(m => m.Name ?? string.Empty).ToList();
-
-            foreach (var member in members)
-            {
-                member?.Dispose();
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to retrieve members for group: {GroupName}", group.Name);
-            adGroup.Members = new List<string>();
-        }
-
-        return adGroup;
     }
 
     private string GetProperty(SearchResult result, string propertyName)
@@ -862,6 +1093,78 @@ public class ADRepository : IADRepository
         {
             return null;
         }
+    }
+
+    // Escape special characters in LDAP search filters to avoid malformed filters or injection
+    private string EscapeLdapFilter(string input)
+    {
+        if (string.IsNullOrEmpty(input)) return string.Empty;
+
+        var sb = new StringBuilder();
+        foreach (var c in input)
+        {
+            switch (c)
+            {
+                case '\\': sb.Append("\\5c"); break;
+                case '*': sb.Append("\\2a"); break;
+                case '(' : sb.Append("\\28"); break;
+                case ')' : sb.Append("\\29"); break;
+                case '\0': sb.Append("\\00"); break;
+                default: sb.Append(c); break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    private ADGroup MapGroupPrincipalToADGroup(GroupPrincipal group)
+    {
+        using var entry = group.GetUnderlyingObject() as DirectoryEntry;
+
+        var adGroup = new ADGroup
+        {
+            Name = group.Name ?? string.Empty,
+            DisplayName = group.DisplayName ?? string.Empty,
+            Description = group.Description ?? string.Empty,
+            DistinguishedName = group.DistinguishedName ?? string.Empty
+        };
+
+        // Get group properties from DirectoryEntry
+        if (entry != null)
+        {
+            adGroup.GroupScope = entry.Properties["groupType"].Value?.ToString() ?? string.Empty;
+            adGroup.GroupType = entry.Properties["groupType"].Value?.ToString() ?? string.Empty;
+
+            var whenCreated = entry.Properties["whenCreated"].Value;
+            if (whenCreated is DateTime created)
+            {
+                adGroup.WhenCreated = created;
+            }
+
+            var whenChanged = entry.Properties["whenChanged"].Value;
+            if (whenChanged is DateTime changed)
+            {
+                adGroup.WhenChanged = changed;
+            }
+        }
+
+        // Get members
+        try
+        {
+            var members = group.Members;
+            adGroup.Members = members.Select(m => m.Name ?? string.Empty).ToList();
+
+            foreach (var member in members)
+            {
+                member?.Dispose();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to retrieve members for group: {GroupName}", group.Name);
+            adGroup.Members = new List<string>();
+        }
+
+        return adGroup;
     }
 
     #endregion

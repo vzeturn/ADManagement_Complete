@@ -72,4 +72,14 @@ public interface IADUserService
     /// Removes a user from a group
     /// </summary>
     Task<Result> RemoveUserFromGroupAsync(string username, string groupName, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets all groups from Active Directory
+    /// </summary>
+    Task<Result<IEnumerable<ADGroupDto>>> GetAllGroupsAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Searches for groups matching the search term
+    /// </summary>
+    Task<Result<IEnumerable<ADGroupDto>>> SearchGroupsAsync(string searchTerm, CancellationToken cancellationToken = default);
 }

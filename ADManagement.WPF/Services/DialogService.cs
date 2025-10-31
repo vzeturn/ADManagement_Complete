@@ -1,5 +1,6 @@
 using Microsoft.Win32;
 using System.Windows;
+using System.Windows.Controls;
 
 namespace ADManagement.WPF.Services;
 
@@ -163,6 +164,57 @@ public class DialogService : IDialogService
         if (inputWindow.ShowDialog() == true)
         {
             return textBox.Text;
+        }
+
+        return null;
+    }
+
+    public (string? Username, string? Password)? ShowCredentialsDialog(string message = "Enter domain credentials", string title = "Credentials")
+    {
+        var window = new Window
+        {
+            Title = title,
+            Width = 420,
+            Height = 200,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            ResizeMode = ResizeMode.NoResize
+        };
+
+        var grid = new Grid { Margin = new Thickness(12) };
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var text = new TextBlock { Text = message, Margin = new Thickness(0, 0, 0, 8) };
+        Grid.SetRow(text, 0);
+        grid.Children.Add(text);
+
+        var userBox = new TextBox { Margin = new Thickness(0, 0, 0, 8), Padding = new Thickness(8) };
+        Grid.SetRow(userBox, 1);
+        grid.Children.Add(userBox);
+
+        var passBox = new PasswordBox { Margin = new Thickness(0, 0, 0, 8), Padding = new Thickness(8) };
+        Grid.SetRow(passBox, 2);
+        grid.Children.Add(passBox);
+
+        var buttonPanel = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var ok = new Button { Content = "OK", Width = 80, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
+        var cancel = new Button { Content = "Cancel", Width = 80, IsCancel = true };
+
+        ok.Click += (s, e) => { window.DialogResult = true; window.Close(); };
+        cancel.Click += (s, e) => { window.DialogResult = false; window.Close(); };
+
+        buttonPanel.Children.Add(ok);
+        buttonPanel.Children.Add(cancel);
+        Grid.SetRow(buttonPanel, 3);
+        grid.Children.Add(buttonPanel);
+
+        window.Content = grid;
+
+        if (window.ShowDialog() == true)
+        {
+            return (userBox.Text, passBox.Password);
         }
 
         return null;

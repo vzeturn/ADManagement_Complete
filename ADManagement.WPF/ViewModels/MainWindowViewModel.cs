@@ -72,11 +72,22 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ShowAbout()
     {
-        var message = "AD Management System v1.0\n\n" +
-                     "A comprehensive Active Directory management tool\n" +
-                     "built with .NET 9.0 and WPF.\n\n" +
-                     "© 2024 All rights reserved.";
+        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        var versionString = version != null ? $"{version.Major}.{version.Minor}.{version.Build}" : "1.0.0";
         
-        _dialogService.ShowInformation(message, "About");
+        var message = $"AD Management System v{versionString}\n\n" +
+                     "A modern Active Directory management tool featuring:\n" +
+                     "• Secure Windows-integrated authentication\n" +
+                     "• Efficient user and group management\n" +
+                     "• Advanced search and export capabilities\n" +
+                     "• Real-time connection diagnostics\n\n" +
+                     "Built with .NET 9 and modern WPF architecture\n" +
+                     "using MVVM, Dependency Injection and Clean Architecture.\n\n" +
+                     "Author: Tran Vu\n" +
+                     "Enhanced with AI assistance from GitHub Copilot\n\n" +
+                     "© 2024 Tran Vu. All rights reserved.\n" +
+                     "For support: https://github.com/vzeturn/ADManagement_Complete";
+        
+        _dialogService.ShowInformation(message, "About AD Management");
     }
 }

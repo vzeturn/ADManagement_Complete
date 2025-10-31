@@ -83,6 +83,11 @@ public interface IADRepository
     /// </summary>
     Task<Result> RemoveUserFromGroupAsync(string username, string groupName, CancellationToken cancellationToken = default);
     
+    /// <summary>
+    /// Searches for groups matching the search term
+    /// </summary>
+    Task<Result<IEnumerable<ADGroup>>> SearchGroupsAsync(string searchTerm, CancellationToken cancellationToken = default);
+    
     #endregion
     
     #region Organizational Unit Operations

@@ -2,6 +2,7 @@ using ADManagement.Application.Configuration;
 using ADManagement.Domain.Interfaces;
 using ADManagement.Infrastructure.Exporters;
 using ADManagement.Infrastructure.Repositories;
+using ADManagement.Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -57,6 +58,9 @@ public static class DependencyInjection
 
         // Register exporters
         services.AddScoped<IExcelExporter, ExcelExporter>();
+
+        // Register infrastructure helper services
+        services.AddScoped<ADConnectionDiagnosticsService>();
 
         return services;
     }
