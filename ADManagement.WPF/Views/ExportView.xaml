@@ -1,0 +1,102 @@
+<UserControl x:Class="ADManagement.WPF.Views.ExportView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             mc:Ignorable="d" 
+             d:DesignHeight="600" d:DesignWidth="900">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <Border Grid.Row="0" Style="{StaticResource Card}">
+            <TextBlock Text="Export Data" 
+                       FontSize="24" FontWeight="Bold" 
+                       Foreground="{StaticResource PrimaryBrush}"/>
+        </Border>
+
+        <!-- Main Content -->
+        <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,8">
+            <StackPanel>
+                <!-- Output Path -->
+                <TextBlock Text="Output Path" FontWeight="Bold" Margin="0,0,0,8"/>
+                <Grid Margin="0,0,0,24">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBox Grid.Column="0" 
+                             Text="{Binding OutputPath, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource ModernTextBox}"
+                             Height="36"/>
+                    
+                    <Button Grid.Column="1" Content="Browse..." 
+                            Style="{StaticResource SecondaryButton}"
+                            Command="{Binding BrowseOutputPathCommand}"
+                            Margin="8,0,0,0" Height="36" Width="100"/>
+                </Grid>
+
+                <!-- Export Options -->
+                <TextBlock Text="Export Options" FontWeight="Bold" Margin="0,0,0,8"/>
+                <CheckBox Content="Include disabled accounts" 
+                          IsChecked="{Binding IncludeDisabledAccounts}"
+                          Margin="0,0,0,24"/>
+
+                <!-- Export Buttons -->
+                <TextBlock Text="Export Actions" FontWeight="Bold" Margin="0,0,0,8"/>
+                <WrapPanel Margin="0,0,0,24">
+                    <Button Content="📊 Export All Users" 
+                            Style="{StaticResource PrimaryButton}"
+                            Command="{Binding ExportAllUsersCommand}"
+                            Margin="0,0,8,8" Height="48" Width="180"/>
+                    
+                    <Button Content="👪 Export All Groups" 
+                            Style="{StaticResource PrimaryButton}"
+                            Command="{Binding ExportGroupsCommand}"
+                            Height="48" Width="180"/>
+                </WrapPanel>
+
+                <!-- Last Exported File -->
+                <Border Background="#E3F2FD" Padding="16" CornerRadius="4"
+                        Visibility="{Binding LastExportedFile, Converter={StaticResource StringToVisibilityConverter}}">
+                    <StackPanel>
+                        <TextBlock Text="Last Exported File" FontWeight="Bold" Margin="0,0,0,8"/>
+                        <TextBlock Text="{Binding LastExportedFile}" 
+                                   TextWrapping="Wrap" Margin="0,0,0,12"/>
+                        
+                        <WrapPanel>
+                            <Button Content="📁 Open Folder" 
+                                    Style="{StaticResource SecondaryButton}"
+                                    Command="{Binding OpenExportFolderCommand}"
+                                    Margin="0,0,8,0" Height="36" Width="120"/>
+                            
+                            <Button Content="📄 Open File" 
+                                    Style="{StaticResource SecondaryButton}"
+                                    Command="{Binding OpenExportedFileCommand}"
+                                    Height="36" Width="120"/>
+                        </WrapPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- Loading Indicator -->
+                <StackPanel HorizontalAlignment="Center" Margin="0,32,0,0"
+                            Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibilityConverter}}">
+                    <TextBlock Text="⏳ Exporting data..." FontSize="18" 
+                               Foreground="{StaticResource PrimaryBrush}"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Status Bar -->
+        <Border Grid.Row="2" Style="{StaticResource Card}">
+            <Border Background="#F0F0F0" Padding="8" CornerRadius="4">
+                <TextBlock Text="{Binding StatusMessage}" FontSize="12"/>
+            </Border>
+        </Border>
+    </Grid>
+</UserControl>

@@ -1,0 +1,113 @@
+<UserControl x:Class="ADManagement.WPF.Views.GroupsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             mc:Ignorable="d" 
+             d:DesignHeight="600" d:DesignWidth="900">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <Border Grid.Row="0" Style="{StaticResource Card}">
+            <TextBlock Text="Group Management" 
+                       FontSize="24" FontWeight="Bold" 
+                       Foreground="{StaticResource PrimaryBrush}"/>
+        </Border>
+
+        <!-- Main Content -->
+        <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,8">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- User Input -->
+                <Grid Grid.Row="0" Margin="0,0,0,16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0" Text="Username:" 
+                               VerticalAlignment="Center" Margin="0,0,8,0"
+                               FontWeight="Medium"/>
+                    
+                    <TextBox Grid.Column="1" 
+                             Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource ModernTextBox}"
+                             Height="36"/>
+                    
+                    <Button Grid.Column="2" Content="Load Groups" 
+                            Style="{StaticResource PrimaryButton}"
+                            Command="{Binding LoadUserGroupsCommand}"
+                            Margin="8,0,0,0" Height="36" Width="120"/>
+                </Grid>
+
+                <!-- Groups List -->
+                <GroupBox Grid.Row="1" Header="User Groups" Margin="0,0,0,16">
+                    <ListBox ItemsSource="{Binding Groups}"
+                             SelectedItem="{Binding SelectedGroup}"
+                             Height="250">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" Padding="8"/>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </GroupBox>
+
+                <!-- Add to Group -->
+                <Grid Grid.Row="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0" Text="Group Name:" 
+                               VerticalAlignment="Center" Margin="0,0,8,0"
+                               FontWeight="Medium"/>
+                    
+                    <TextBox Grid.Column="1" 
+                             Text="{Binding GroupName, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource ModernTextBox}"
+                             Height="36"/>
+                    
+                    <Button Grid.Column="2" Content="Add to Group" 
+                            Style="{StaticResource PrimaryButton}"
+                            Command="{Binding AddToGroupCommand}"
+                            Margin="8,0,0,0" Height="36" Width="120"/>
+                    
+                    <Button Grid.Column="3" Content="Remove from Group" 
+                            Style="{StaticResource SecondaryButton}"
+                            Command="{Binding RemoveFromGroupCommand}"
+                            Margin="8,0,0,0" Height="36" Width="150"/>
+                </Grid>
+            </Grid>
+        </Border>
+
+        <!-- Status Bar -->
+        <Border Grid.Row="2" Style="{StaticResource Card}">
+            <Grid>
+                <Border Background="#F0F0F0" Padding="8" CornerRadius="4">
+                    <TextBlock Text="{Binding StatusMessage}" FontSize="12"/>
+                </Border>
+                
+                <Button Content="Clear" 
+                        Style="{StaticResource SecondaryButton}"
+                        Command="{Binding ClearFormCommand}"
+                        HorizontalAlignment="Right"
+                        Height="32" Width="80"/>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>
