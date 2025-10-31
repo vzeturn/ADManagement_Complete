@@ -1,5 +1,6 @@
-using ADManagement.Application.DTOs;
+﻿using ADManagement.Application.DTOs;
 using ADManagement.Domain.Common;
+using ADManagement.Domain.Entities;
 
 namespace ADManagement.Application.Interfaces;
 
@@ -62,29 +63,9 @@ public interface IADUserService
     /// Creates a new user in Active Directory
     /// </summary>
     Task<Result<ADUserDto>> CreateUserAsync(DTOs.CreateUserRequest request, CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Gets groups that a user is a member of
-    /// </summary>
-    Task<Result<IEnumerable<string>>> GetUserGroupsAsync(string username, CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Adds a user to a group
-    /// </summary>
-    Task<Result> AddUserToGroupAsync(string username, string groupName, CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Removes a user from a group
-    /// </summary>
-    Task<Result> RemoveUserFromGroupAsync(string username, string groupName, CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Gets all groups from Active Directory
-    /// </summary>
-    Task<Result<IEnumerable<ADGroupDto>>> GetAllGroupsAsync(CancellationToken cancellationToken = default);
+    // ✅ Add this
+    Task<Result> UpdateUserAsync(ADUserDto user, CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Searches for groups matching the search term
-    /// </summary>
-    Task<Result<IEnumerable<ADGroupDto>>> SearchGroupsAsync(string searchTerm, CancellationToken cancellationToken = default);
+
 }

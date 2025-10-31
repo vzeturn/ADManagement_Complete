@@ -1,16 +1,17 @@
-using System.Collections.Concurrent;
-using System.DirectoryServices;
-using System.DirectoryServices.AccountManagement;
-using System.DirectoryServices.Protocols;
-using ADManagement.Application.Configuration;
-using System.Text;
+﻿using ADManagement.Application.Configuration;
+using ADManagement.Application.DTOs;
 using ADManagement.Domain.Common;
 using ADManagement.Domain.Entities;
 using ADManagement.Domain.Exceptions;
 using ADManagement.Domain.Interfaces;
 using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
+using System.DirectoryServices;
+using System.DirectoryServices.AccountManagement;
+using System.DirectoryServices.Protocols;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 
 namespace ADManagement.Infrastructure.Repositories;
 
@@ -672,280 +673,595 @@ public class ADRepository : IADRepository
 
     #region Group Operations
 
-    public async Task<Result<IEnumerable<ADGroup>>> GetAllGroupsAsync(CancellationToken cancellationToken = default)
+/// <summary>
+/// Gets all groups from Active Directory
+/// </summary>
+public async Task<Result<IEnumerable<ADGroup>>> GetAllGroupsAsync(CancellationToken cancellationToken = default)
+{
+    return await Task.Run(() =>
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            _logger.LogInformation("Getting all groups from Active Directory");
+
+            var _entry = GetDirectoryEntry();
+            using var searcher = new DirectorySearcher(_entry)
             {
-                _logger.LogInformation("Retrieving all groups from Active Directory");
+                Filter = "(objectCategory=group)",
+                PageSize = _config.PageSize
+            };
 
-                using var context = GetPrincipalContext();
-                using var searcher = new PrincipalSearcher(new GroupPrincipal(context));
-
-                var groups = new List<ADGroup>();
-                var results = searcher.FindAll();
-
-                foreach (GroupPrincipal group in results)
-                {
-                    if (group != null)
-                    {
-                        try
-                        {
-                            groups.Add(MapGroupPrincipalToADGroup(group));
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(ex, "Failed to map group: {GroupName}", group.Name);
-                        }
-                        finally
-                        {
-                            group.Dispose();
-                        }
-                    }
-                }
-
-                _logger.LogInformation("Retrieved {Count} groups", groups.Count);
-                return Result.Success<IEnumerable<ADGroup>>(groups, $"Retrieved {groups.Count} groups");
-            }
-            catch (Exception ex)
+            // Properties to load
+            searcher.PropertiesToLoad.AddRange(new[]
             {
-                _logger.LogError(ex, "Error retrieving groups");
-                return Result.Failure<IEnumerable<ADGroup>>($"Failed to retrieve groups: {ex.Message}");
-            }
-        }, cancellationToken);
-    }
+                "cn", "name", "distinguishedName", "description",
+                "groupType", "mail", "managedBy", "member", "memberOf",
+                "whenCreated", "whenChanged", "sAMAccountName"
+            });
 
-    public async Task<Result<IEnumerable<string>>> GetUserGroupsAsync(string username, CancellationToken cancellationToken = default)
+            var results = searcher.FindAll();
+            var groups = new List<ADGroup>();
+
+            foreach (SearchResult result in results)
+            {
+                var group = MapSearchResultToADGroup(result);
+                groups.Add(group);
+            }
+
+            _logger.LogInformation("Retrieved {Count} groups", groups.Count);
+            return Result.Success<IEnumerable<ADGroup>>(groups);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting all groups");
+            return Result.Failure<IEnumerable<ADGroup>>($"Error getting groups: {ex.Message}");
+        }
+    }, cancellationToken);
+}
+
+/// <summary>
+/// Searches for groups matching the search term (fuzzy search)
+/// </summary>
+public async Task<Result<IEnumerable<ADGroup>>> SearchGroupsAsync(string searchTerm, CancellationToken cancellationToken = default)
+{
+    return await Task.Run(() =>
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            if (string.IsNullOrWhiteSpace(searchTerm))
             {
-                _logger.LogInformation("Retrieving groups for user: {Username}", username);
+                return GetAllGroupsAsync(cancellationToken).Result;
+            }
 
-                // Use DirectoryEntry + DirectorySearcher to read memberOf attribute directly which is much faster
-                AuthenticationTypes authType = AuthenticationTypes.None;
-                if (_config.UseSSL)
+            _logger.LogInformation("Searching groups with term: {SearchTerm}", searchTerm);
+
+            // Fuzzy search: search in cn, name, description, displayName
+            var filter = $"(&(objectCategory=group)(|(cn=*{searchTerm}*)(name=*{searchTerm}*)(description=*{searchTerm}*)(displayName=*{searchTerm}*)))";
+
+            var _entry = GetDirectoryEntry();
+            using var searcher = new DirectorySearcher(_entry)
+            {
+                Filter = filter,
+                PageSize = _config.PageSize
+            };
+
+            searcher.PropertiesToLoad.AddRange(new[]
+            {
+                "cn", "name", "distinguishedName", "description",
+                "groupType", "mail", "managedBy", "member", "memberOf",
+                "whenCreated", "whenChanged", "sAMAccountName"
+            });
+
+            var results = searcher.FindAll();
+            var groups = new List<ADGroup>();
+
+            foreach (SearchResult result in results)
+            {
+                var group = MapSearchResultToADGroup(result);
+                groups.Add(group);
+            }
+
+            _logger.LogInformation("Found {Count} groups matching '{SearchTerm}'", groups.Count, searchTerm);
+            return Result.Success<IEnumerable<ADGroup>>(groups);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error searching groups with term: {SearchTerm}", searchTerm);
+            return Result.Failure<IEnumerable<ADGroup>>($"Error searching groups: {ex.Message}");
+        }
+    }, cancellationToken);
+}
+
+/// <summary>
+/// Gets a specific group by name
+/// </summary>
+public async Task<Result<ADGroup>> GetGroupByNameAsync(string groupName, CancellationToken cancellationToken = default)
+{
+    return await Task.Run(() =>
+    {
+        try
+        {
+            _logger.LogInformation("Getting group by name: {GroupName}", groupName);
+
+            using var context = GetPrincipalContext();
+            using var group = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
+
+            if (group == null)
+            {
+                _logger.LogWarning("Group not found: {GroupName}", groupName);
+                return Result.Failure<ADGroup>($"Group '{groupName}' not found");
+            }
+
+            var adGroup = MapGroupPrincipalToADGroup(group);
+
+            _logger.LogInformation("Successfully retrieved group: {GroupName}", groupName);
+            return Result.Success<ADGroup>(adGroup);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting group by name: {GroupName}", groupName);
+            return Result.Failure<ADGroup>($"Error getting group: {ex.Message}");
+        }
+    }, cancellationToken);
+}
+
+/// <summary>
+/// Gets groups that a user is a member of
+/// </summary>
+public async Task<Result<IEnumerable<ADGroup>>> GetUserGroupsAsync(string username, CancellationToken cancellationToken = default)
+{
+    return await Task.Run(() =>
+    {
+        try
+        {
+            _logger.LogInformation("Getting groups for user: {Username}", username);
+
+            using var context = GetPrincipalContext();
+            using var user = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
+
+            if (user == null)
+            {
+                _logger.LogWarning("User not found: {Username}", username);
+                return Result.Failure<IEnumerable<ADGroup>>($"User '{username}' not found");
+            }
+
+            var groups = user.GetGroups().ToList();
+            var adGroups = new List<ADGroup>();
+
+            foreach (Principal group in groups)
+            {
+                if (group is GroupPrincipal groupPrincipal)
                 {
-                    authType |= AuthenticationTypes.SecureSocketsLayer;
+                    adGroups.Add(MapGroupPrincipalToADGroup(groupPrincipal));
                 }
-                authType |= AuthenticationTypes.Secure;
+            }
 
-                string ldapUsername = _config.Username ?? string.Empty;
-                if (!string.IsNullOrWhiteSpace(ldapUsername) && !ldapUsername.Contains("\\") && !ldapUsername.Contains("@") && !string.IsNullOrWhiteSpace(_config.Domain))
+            _logger.LogInformation("User {Username} is member of {Count} groups", username, adGroups.Count);
+            return Result.Success<IEnumerable<ADGroup>>(adGroups);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting groups for user: {Username}", username);
+            return Result.Failure<IEnumerable<ADGroup>>($"Error getting user groups: {ex.Message}");
+        }
+    }, cancellationToken);
+}
+
+/// <summary>
+/// Adds a user to a group
+/// </summary>
+public async Task<Result> AddUserToGroupAsync(string username, string groupName, CancellationToken cancellationToken = default)
+{
+    return await Task.Run(() =>
+    {
+        try
+        {
+            _logger.LogInformation("Adding user {Username} to group {GroupName}", username, groupName);
+
+            using var context = GetPrincipalContext();
+
+            // Find user
+            using var user = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
+            if (user == null)
+            {
+                _logger.LogWarning("User not found: {Username}", username);
+                return Result.Failure($"User '{username}' not found");
+            }
+
+            // Find group
+            using var group = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
+            if (group == null)
+            {
+                _logger.LogWarning("Group not found: {GroupName}", groupName);
+                return Result.Failure($"Group '{groupName}' not found");
+            }
+
+            // Check if user is already a member
+            if (user.IsMemberOf(group))
+            {
+                _logger.LogInformation("User {Username} is already a member of group {GroupName}", username, groupName);
+                return Result.Success($"User '{username}' is already a member of group '{groupName}'");
+            }
+
+            // Add user to group
+            group.Members.Add(user);
+            group.Save();
+
+            _logger.LogInformation("Successfully added user {Username} to group {GroupName}", username, groupName);
+            return Result.Success($"User '{username}' added to group '{groupName}' successfully");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error adding user {Username} to group {GroupName}", username, groupName);
+            return Result.Failure($"Error adding user to group: {ex.Message}");
+        }
+    }, cancellationToken);
+}
+
+/// <summary>
+/// Removes a user from a group
+/// </summary>
+public async Task<Result> RemoveUserFromGroupAsync(string username, string groupName, CancellationToken cancellationToken = default)
+{
+    return await Task.Run(() =>
+    {
+        try
+        {
+            _logger.LogInformation("Removing user {Username} from group {GroupName}", username, groupName);
+
+            using var context = GetPrincipalContext();
+
+            // Find user
+            using var user = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
+            if (user == null)
+            {
+                _logger.LogWarning("User not found: {Username}", username);
+                return Result.Failure($"User '{username}' not found");
+            }
+
+            // Find group
+            using var group = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
+            if (group == null)
+            {
+                _logger.LogWarning("Group not found: {GroupName}", groupName);
+                return Result.Failure($"Group '{groupName}' not found");
+            }
+
+            // Check if user is a member
+            if (!user.IsMemberOf(group))
+            {
+                _logger.LogInformation("User {Username} is not a member of group {GroupName}", username, groupName);
+                return Result.Success($"User '{username}' is not a member of group '{groupName}'");
+            }
+
+            // Remove user from group
+            group.Members.Remove(user);
+            group.Save();
+
+            _logger.LogInformation("Successfully removed user {Username} from group {GroupName}", username, groupName);
+            return Result.Success($"User '{username}' removed from group '{groupName}' successfully");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error removing user {Username} from group {GroupName}", username, groupName);
+            return Result.Failure($"Error removing user from group: {ex.Message}");
+        }
+    }, cancellationToken);
+}
+
+/// <summary>
+/// Gets all members of a group
+/// </summary>
+public async Task<Result<IEnumerable<ADUser>>> GetGroupMembersAsync(string groupName, CancellationToken cancellationToken = default)
+{
+    return await Task.Run(() =>
+    {
+        try
+        {
+            _logger.LogInformation("Getting members of group: {GroupName}", groupName);
+
+            using var context = GetPrincipalContext();
+            using var group = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
+
+            if (group == null)
+            {
+                _logger.LogWarning("Group not found: {GroupName}", groupName);
+                return Result.Failure<IEnumerable<ADUser>>($"Group '{groupName}' not found");
+            }
+
+            var members = group.GetMembers().ToList();
+            var adUsers = new List<ADUser>();
+
+            foreach (Principal member in members)
+            {
+                if (member is UserPrincipal userPrincipal)
                 {
-                    ldapUsername = $"{_config.Domain}\\{ldapUsername}";
+                    adUsers.Add(MapUserPrincipalToADUser(userPrincipal));
                 }
+            }
 
-                string ldapPath = string.IsNullOrWhiteSpace(_config.DefaultSearchOU)
-                    ? _config.LdapPath
-                    : $"{_config.LdapPath}/{_config.DefaultSearchOU}";
+            _logger.LogInformation("Group {GroupName} has {Count} members", groupName, adUsers.Count);
+            return Result.Success<IEnumerable<ADUser>>(adUsers);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting members of group: {GroupName}", groupName);
+            return Result.Failure<IEnumerable<ADUser>>($"Error getting group members: {ex.Message}");
+        }
+    }, cancellationToken);
+}
 
-                using var entry = !string.IsNullOrWhiteSpace(ldapUsername) && !string.IsNullOrWhiteSpace(_config.Password)
-                    ? new DirectoryEntry(ldapPath, ldapUsername, _config.Password, authType)
-                    : new DirectoryEntry(ldapPath);
+/// <summary>
+/// Creates a new group in Active Directory
+/// </summary>
+public async Task<Result<ADGroup>> CreateGroupAsync(
+    string groupName,
+    string description,
+    string groupScope,
+    string groupType,
+    string organizationalUnit = "",
+    CancellationToken cancellationToken = default)
+{
+    return await Task.Run(() =>
+    {
+        try
+        {
+            _logger.LogInformation("Creating group: {GroupName}", groupName);
 
-                using var searcher = new DirectorySearcher(entry)
+            using var context = string.IsNullOrWhiteSpace(organizationalUnit)
+                ? GetPrincipalContext()
+                : new PrincipalContext(ContextType.Domain, _config.Domain, organizationalUnit, 
+                    _config.Username, _config.Password);
+
+            using var group = new GroupPrincipal(context)
+            {
+                Name = groupName,
+                SamAccountName = groupName,
+                Description = description
+            };
+
+            // Set group scope
+            if (!string.IsNullOrWhiteSpace(groupScope))
+            {
+                group.GroupScope = groupScope.ToLower() switch
                 {
-                    Filter = $"(&(objectClass=user)(sAMAccountName={EscapeLdapFilter(username)}))",
-                    PageSize = 1,
-                    SizeLimit = 1,
-                    ServerTimeLimit = TimeSpan.FromSeconds(_config.TimeoutSeconds)
+                    "global" => GroupScope.Global,
+                    "universal" => GroupScope.Universal,
+                    "local" => GroupScope.Local,
+                    _ => GroupScope.Global
                 };
-
-                searcher.PropertiesToLoad.Clear();
-                searcher.PropertiesToLoad.Add("memberOf");
-
-                var result = searcher.FindOne();
-
-                if (result == null)
-                {
-                    _logger.LogWarning("User not found: {Username}", username);
-                    throw new UserNotFoundException(username);
-                }
-
-                var groups = new List<string>();
-
-                if (result.Properties.Contains("memberOf"))
-                {
-                    foreach (var val in result.Properties["memberOf"] )
-                    {
-                        var dn = val?.ToString();
-                        if (!string.IsNullOrWhiteSpace(dn))
-                        {
-                            groups.Add(GetNameFromDistinguishedName(dn));
-                        }
-                    }
-                }
-
-                _logger.LogInformation("Retrieved {Count} groups for user {Username}", groups.Count, username);
-                return Result.Success<IEnumerable<string>>(groups, $"Retrieved {groups.Count} groups");
             }
-            catch (UserNotFoundException ex)
-            {
-                return Result.Failure<IEnumerable<string>>(ex.Message);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error retrieving groups for user: {Username}", username);
-                return Result.Failure<IEnumerable<string>>($"Failed to retrieve groups: {ex.Message}");
-            }
-        }, cancellationToken);
-    }
 
-    public async Task<Result> AddUserToGroupAsync(string username, string groupName, CancellationToken cancellationToken = default)
-    {
-        return await Task.Run(() =>
+            // Note: GroupPrincipal doesn't have IsSecurityGroup property
+            // Group type is determined by GroupPrincipal vs DistributionGroup
+
+            group.Save();
+
+            var adGroup = MapGroupPrincipalToADGroup(group);
+
+            _logger.LogInformation("Successfully created group: {GroupName}", groupName);
+            return Result<ADGroup>.Success(adGroup);
+        }
+        catch (Exception ex)
         {
-            try
-            {
-                _logger.LogInformation("Adding user {Username} to group {GroupName}", username, groupName);
+            _logger.LogError(ex, "Error creating group: {GroupName}", groupName);
+            return Result.Failure<ADGroup>($"Error creating group: {ex.Message}");
+        }
+    }, cancellationToken);
+}
 
-                using var context = GetPrincipalContext();
-                using var user = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
-                using var group = GroupPrincipal.FindByIdentity(context, IdentityType.Name, groupName);
-
-                if (user == null)
-                {
-                    throw new UserNotFoundException(username);
-                }
-
-                if (group == null)
-                {
-                    throw new GroupNotFoundException(groupName);
-                }
-
-                if (group.Members.Contains(user))
-                {
-                    return Result.Success("User is already a member of this group");
-                }
-
-                group.Members.Add(user);
-                group.Save();
-
-                _logger.LogInformation("User {Username} added to group {GroupName} successfully", username, groupName);
-                return Result.Success("User added to group successfully");
-            }
-            catch (UserNotFoundException ex)
-            {
-                return Result.Failure(ex.Message);
-            }
-            catch (GroupNotFoundException ex)
-            {
-                return Result.Failure(ex.Message);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error adding user {Username} to group {GroupName}", username, groupName);
-                return Result.Failure($"Failed to add user to group: {ex.Message}");
-            }
-        }, cancellationToken);
-    }
-
-    public async Task<Result> RemoveUserFromGroupAsync(string username, string groupName, CancellationToken cancellationToken = default)
+/// <summary>
+/// Deletes a group from Active Directory
+/// </summary>
+public async Task<Result> DeleteGroupAsync(string groupName, CancellationToken cancellationToken = default)
+{
+    return await Task.Run(() =>
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            _logger.LogInformation("Deleting group: {GroupName}", groupName);
+
+            using var context = GetPrincipalContext();
+            using var group = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
+
+            if (group == null)
             {
-                _logger.LogInformation("Removing user {Username} from group {GroupName}", username, groupName);
-
-                using var context = GetPrincipalContext();
-                using var user = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
-                using var group = GroupPrincipal.FindByIdentity(context, IdentityType.Name, groupName);
-
-                if (user == null)
-                {
-                    throw new UserNotFoundException(username);
-                }
-
-                if (group == null)
-                {
-                    throw new GroupNotFoundException(groupName);
-                }
-
-                if (!group.Members.Contains(user))
-                {
-                    return Result.Success("User is not a member of this group");
-                }
-
-                group.Members.Remove(user);
-                group.Save();
-
-                _logger.LogInformation("User {Username} removed from group {GroupName} successfully", username, groupName);
-                return Result.Success("User removed from group successfully");
+                _logger.LogWarning("Group not found: {GroupName}", groupName);
+                return Result.Failure($"Group '{groupName}' not found");
             }
-            catch (UserNotFoundException ex)
-            {
-                return Result.Failure(ex.Message);
-            }
-            catch (GroupNotFoundException ex)
-            {
-                return Result.Failure(ex.Message);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error removing user {Username} from group {GroupName}", username, groupName);
-                return Result.Failure($"Failed to remove user from group: {ex.Message}");
-            }
-        }, cancellationToken);
-    }
 
-    public async Task<Result<IEnumerable<ADGroup>>> SearchGroupsAsync(string searchTerm, CancellationToken cancellationToken = default)
+            group.Delete();
+
+            _logger.LogInformation("Successfully deleted group: {GroupName}", groupName);
+            return Result.Success($"Group '{groupName}' deleted successfully");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting group: {GroupName}", groupName);
+            return Result.Failure($"Error deleting group: {ex.Message}");
+        }
+    }, cancellationToken);
+}
+
+/// <summary>
+/// Updates group properties
+/// </summary>
+public async Task<Result> UpdateGroupAsync(ADGroup group, CancellationToken cancellationToken = default)
+{
+    return await Task.Run(() =>
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            _logger.LogInformation("Updating group: {GroupName}", group.Name);
+
+            using var context = GetPrincipalContext();
+            using var groupPrincipal = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, group.SamAccountName);
+
+            if (groupPrincipal == null)
             {
-                _logger.LogInformation("Searching groups with term: {SearchTerm}", searchTerm);
-
-                using var entry = new DirectoryEntry(_config.LdapPath);
-                using var searcher = new DirectorySearcher(entry)
-                {
-                    Filter = $"(&(objectClass=group)(|(cn=*{EscapeLdapFilter(searchTerm)}*)(displayName=*{EscapeLdapFilter(searchTerm)}*)(description=*{EscapeLdapFilter(searchTerm)}*)))",
-                    PageSize = _config.PageSize,
-                    ServerTimeLimit = TimeSpan.FromSeconds(_config.TimeoutSeconds)
-                };
-
-                searcher.PropertiesToLoad.Clear();
-                searcher.PropertiesToLoad.AddRange(new[] { "cn", "displayName", "description", "distinguishedName", "groupType", "whenCreated", "whenChanged" });
-
-                var results = searcher.FindAll();
-                var groups = new List<ADGroup>();
-
-                foreach (SearchResult res in results)
-                {
-                    try
-                    {
-                        var gp = new ADGroup
-                        {
-                            Name = GetProperty(res, "cn"),
-                            DisplayName = GetProperty(res, "displayName"),
-                            Description = GetProperty(res, "description"),
-                            DistinguishedName = GetProperty(res, "distinguishedName")
-                        };
-
-                        groups.Add(gp);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to map group search result");
-                    }
-                }
-
-                _logger.LogInformation("Found {Count} groups for search term", groups.Count);
-                return Result.Success<IEnumerable<ADGroup>>(groups, $"Found {groups.Count} groups");
+                _logger.LogWarning("Group not found: {GroupName}", group.Name);
+                return Result.Failure($"Group '{group.Name}' not found");
             }
-            catch (Exception ex)
+
+            // Update properties
+            groupPrincipal.Description = group.Description;
+
+            // Use DirectoryEntry for additional properties
+            using var entry = groupPrincipal.GetUnderlyingObject() as DirectoryEntry;
+            if (entry != null)
             {
-                _logger.LogError(ex, "Error searching groups");
-                return Result.Failure<IEnumerable<ADGroup>>($"Group search failed: {ex.Message}");
+                if (!string.IsNullOrWhiteSpace(group.Email))
+                    entry.Properties["mail"].Value = group.Email;
+
+                if (!string.IsNullOrWhiteSpace(group.ManagedBy))
+                    entry.Properties["managedBy"].Value = group.ManagedBy;
+
+                entry.CommitChanges();
             }
-        }, cancellationToken);
-    }
+
+            groupPrincipal.Save();
+
+            _logger.LogInformation("Successfully updated group: {GroupName}", group.Name);
+            return Result.Success($"Group '{group.Name}' updated successfully");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating group: {GroupName}", group.Name);
+            return Result.Failure($"Error updating group: {ex.Message}");
+        }
+    }, cancellationToken);
+}
+public async Task<Result> UpdateUserAsync(ADUser user, CancellationToken cancellationToken = default)
+{
+    return await Task.Run(() =>
+    {
+        try
+        {
+            using var entry = GetDirectoryEntry(user.DistinguishedName);
+
+            // Update example fields
+            entry.Properties["displayName"].Value = user.DisplayName;
+            entry.Properties["description"].Value = user.Description;
+            entry.Properties["department"].Value = user.Department;
+            entry.Properties["title"].Value = user.Title;
+            entry.Properties["company"].Value = user.Company;
+            entry.Properties["officeName"].Value = user.Office;
+            //entry.Properties["telephoneNumber"].Value = user.TelephoneNumber;
+            //entry.Properties["mobile"].Value = user.Mobile;
+
+            entry.CommitChanges();
+
+            _logger.LogInformation("Updated user {Username}", user.Username);
+            return Result.Success("User updated successfully");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating user {Username}", user.Username);
+            return Result.Failure($"Error updating user: {ex.Message}");
+        }
+    }, cancellationToken);
+}
 
     #endregion
+
+    #region Helper Methods for Group Mapping
+
+    /// <summary>
+    /// Maps SearchResult to ADGroup
+    /// </summary>
+    private ADGroup MapSearchResultToADGroup(SearchResult result)
+{
+    var groupType = GetInt32Property(result, "groupType");
+    
+    return new ADGroup
+    {
+        Name = GetProperty(result, "cn"),
+        DistinguishedName = GetProperty(result, "distinguishedName"),
+        Description = GetProperty(result, "description"),
+        GroupScope = GetGroupScope(groupType),
+        GroupType = GetGroupType(groupType),
+        Email = GetProperty(result, "mail"),
+        ManagedBy = GetProperty(result, "managedBy"),
+        Members = GetMultiValueProperty(result, "member"),
+        MemberOf = GetMultiValueProperty(result, "memberOf"),
+        WhenCreated = GetDateTimeProperty(result, "whenCreated"),
+        WhenChanged = GetDateTimeProperty(result, "whenChanged"),
+        SamAccountName = GetProperty(result, "sAMAccountName")
+    };
+}
+
+/// <summary>
+/// Maps GroupPrincipal to ADGroup
+/// </summary>
+private ADGroup MapGroupPrincipalToADGroup(GroupPrincipal group)
+{
+    var members = new List<string>();
+    var memberOf = new List<string>();
+
+    try
+    {
+        var groupMembers = group.GetMembers();
+        members = groupMembers.Select(m => m.DistinguishedName).ToList();
+    }
+    catch { /* Ignore errors getting members */ }
+
+    try
+    {
+        var groups = group.GetGroups();
+        memberOf = groups.Select(g => g.DistinguishedName).ToList();
+    }
+    catch { /* Ignore errors getting groups */ }
+
+    return new ADGroup
+    {
+        Name = group.Name,
+        DistinguishedName = group.DistinguishedName,
+        Description = group.Description,
+        GroupScope = group.GroupScope?.ToString() ?? "Unknown",
+        GroupType = group.IsSecurityGroup == true ? "Security" : "Distribution",
+        Email = string.Empty, // Not available in GroupPrincipal
+        ManagedBy = string.Empty, // Not available in GroupPrincipal
+        Members = members,
+        MemberOf = memberOf,
+        WhenCreated = DateTime.MinValue, // Not available in GroupPrincipal
+        WhenChanged = DateTime.MinValue, // Not available in GroupPrincipal
+        SamAccountName = group.SamAccountName
+    };
+}
+
+/// <summary>
+/// Gets group scope from groupType flag
+/// </summary>
+private string GetGroupScope(int groupType)
+{
+    // GroupType flags:
+    // 2 = Global
+    // 4 = Domain Local
+    // 8 = Universal
+
+    if ((groupType & 8) == 8)
+        return "Universal";
+    if ((groupType & 4) == 4)
+        return "DomainLocal";
+    if ((groupType & 2) == 2)
+        return "Global";
+
+    return "Unknown";
+}
+
+/// <summary>
+/// Gets group type from groupType flag
+/// </summary>
+private string GetGroupType(int groupType)
+{
+    // GroupType flags:
+    // -2147483648 (0x80000000) = Security Group
+    // If not security, it's a Distribution Group
+
+    return (groupType & -2147483648) != 0 ? "Security" : "Distribution";
+}
+
+#endregion
 
     #region Organizational Unit Operations
 
@@ -1281,57 +1597,45 @@ public class ADRepository : IADRepository
         }
         return sb.ToString();
     }
-
-    private ADGroup MapGroupPrincipalToADGroup(GroupPrincipal group)
+    private DirectoryEntry GetDirectoryEntry(string? searchPath = null)
     {
-        using var entry = group.GetUnderlyingObject() as DirectoryEntry;
-
-        var adGroup = new ADGroup
-        {
-            Name = group.Name ?? string.Empty,
-            DisplayName = group.DisplayName ?? string.Empty,
-            Description = group.Description ?? string.Empty,
-            DistinguishedName = group.DistinguishedName ?? string.Empty
-        };
-
-        // Get group properties from DirectoryEntry
-        if (entry != null)
-        {
-            adGroup.GroupScope = entry.Properties["groupType"].Value?.ToString() ?? string.Empty;
-            adGroup.GroupType = entry.Properties["groupType"].Value?.ToString() ?? string.Empty;
-
-            var whenCreated = entry.Properties["whenCreated"].Value;
-            if (whenCreated is DateTime created)
-            {
-                adGroup.WhenCreated = created;
-            }
-
-            var whenChanged = entry.Properties["whenChanged"].Value;
-            if (whenChanged is DateTime changed)
-            {
-                adGroup.WhenChanged = changed;
-            }
-        }
-
-        // Get members
         try
         {
-            var members = group.Members;
-            adGroup.Members = members.Select(m => m.Name ?? string.Empty).ToList();
+            string ldapPath = string.IsNullOrWhiteSpace(searchPath)
+                ? _config.LdapPath
+                : searchPath;
 
-            foreach (var member in members)
+            AuthenticationTypes authType = AuthenticationTypes.Secure;
+            if (_config.UseSSL)
+                authType |= AuthenticationTypes.SecureSocketsLayer;
+
+            string? username = _config.Username;
+            string? password = _config.Password;
+
+            // Chuẩn hóa username (DOMAIN\username) nếu cần
+            if (!string.IsNullOrWhiteSpace(username) &&
+                !username.Contains("\\") && !username.Contains("@") &&
+                !string.IsNullOrWhiteSpace(_config.Domain))
             {
-                member?.Dispose();
+                username = $"{_config.Domain}\\{username}";
             }
+
+            if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrWhiteSpace(password))
+            {
+                _logger.LogDebug("Creating DirectoryEntry with credentials for {LdapPath}", ldapPath);
+                return new DirectoryEntry(ldapPath, username, password, authType);
+            }
+
+            _logger.LogDebug("Creating DirectoryEntry without explicit credentials for {LdapPath}", ldapPath);
+            return new DirectoryEntry(ldapPath);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to retrieve members for group: {GroupName}", group.Name);
-            adGroup.Members = new List<string>();
+            _logger.LogError(ex, "Failed to create DirectoryEntry");
+            throw;
         }
-
-        return adGroup;
     }
+
 
     #endregion
 }

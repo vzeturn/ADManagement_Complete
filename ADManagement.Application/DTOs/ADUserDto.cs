@@ -1,3 +1,4 @@
+using CommunityToolkit.Mvvm.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 
@@ -7,7 +8,7 @@ namespace ADManagement.Application.DTOs;
 /// Comprehensive Data Transfer Object for Active Directory User
 /// Contains all standard AD user attributes with validation and helper methods
 /// </summary>
-public class ADUserDto
+public class ADUserDto: ObservableObject
 {
     #region Core Identity Information
 

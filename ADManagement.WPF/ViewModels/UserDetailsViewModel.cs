@@ -17,6 +17,8 @@ namespace ADManagement.WPF.ViewModels;
 public partial class UserDetailsViewModel : ObservableObject
 {
     private readonly IADUserService _userService;
+    private readonly IADGroupService _groupService;
+
     private readonly IDialogService _dialogService;
     private readonly INavigationService _navigationService;
     private readonly IAuditService _auditService;
@@ -24,12 +26,14 @@ public partial class UserDetailsViewModel : ObservableObject
 
     public UserDetailsViewModel(
         IADUserService userService,
+        IADGroupService groupService,
         IDialogService dialogService,
         INavigationService navigationService,
         IAuditService auditService,
         ILogger<UserDetailsViewModel> logger)
     {
         _userService = userService;
+        _groupService = groupService;
         _dialogService = dialogService;
         _navigationService = navigationService;
         _auditService = auditService;
@@ -70,13 +74,13 @@ public partial class UserDetailsViewModel : ObservableObject
             IsLoading = true;
             StatusMessage = $"Loading groups for {SelectedUser.SamAccountName}...";
 
-            var result = await _userService.GetUserGroupsAsync(SelectedUser.SamAccountName);
+            var result = await _groupService.GetUserGroupsAsync(SelectedUser.SamAccountName);
             if (result.IsSuccess && result.Value != null)
             {
                 Groups.Clear();
                 foreach (var g in result.Value)
                 {
-                    Groups.Add(g);
+                    Groups.Add(g.Name);
                 }
                 StatusMessage = $"User is member of {Groups.Count} group(s)";
             }
@@ -131,7 +135,7 @@ public partial class UserDetailsViewModel : ObservableObject
             IsLoading = true;
             StatusMessage = $"Adding user to group {groupName}...";
 
-            var result = await _userService.AddUserToGroupAsync(SelectedUser.SamAccountName!, groupName);
+            var result = await _groupService.AddUserToGroupAsync(SelectedUser.SamAccountName!, groupName);
             if (result.IsSuccess)
             {
                 _dialogService.ShowSuccess(result.Message, "Success");
@@ -171,7 +175,7 @@ public partial class UserDetailsViewModel : ObservableObject
             IsLoading = true;
             StatusMessage = $"Removing user from group {SelectedGroup}...";
 
-            var result = await _userService.RemoveUserFromGroupAsync(SelectedUser.SamAccountName!, SelectedGroup);
+            var result = await _groupService.RemoveUserFromGroupAsync(SelectedUser.SamAccountName!, SelectedGroup);
             if (result.IsSuccess)
             {
                 _dialogService.ShowSuccess(result.Message, "Success");

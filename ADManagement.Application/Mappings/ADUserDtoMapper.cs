@@ -429,6 +429,39 @@ public static class ADUserDtoMapper
         return users.Select(FromUserPrincipal);
     }
 
+    public static ADUser ToEntity(this ADUserDto dto)
+    {
+        return new ADUser
+        {
+            Username = dto.SamAccountName,
+            DisplayName = dto.DisplayName,
+            DistinguishedName = dto.DistinguishedName,
+            FirstName = dto.GivenName,
+            LastName = dto.Surname,
+            Email = dto.Email,
+            PhoneNumber = dto.TelephoneNumber,
+            MobileNumber = dto.Mobile,
+            FaxNumber = dto.Fax,
+            Department = dto.Department,
+            Title = dto.Title,
+            Company = dto.Company,
+            Office = dto.Office,
+            Manager = dto.Manager,
+            StreetAddress = dto.StreetAddress,
+            City = dto.City,
+            State = dto.State,
+            PostalCode = dto.PostalCode,
+            Country = dto.Country,
+            IsEnabled = dto.IsEnabled,
+            IsLockedOut = dto.IsLocked,
+            LastLogon = dto.LastLogon,
+            LastPasswordSet = dto.PasswordLastSet,
+            AccountExpires = dto.AccountExpirationDate,
+            MemberOf = dto.MemberOf.ToList()
+        };
+    }
+
+
     #endregion
 
     #region Property Extraction Helpers (DirectoryEntry)

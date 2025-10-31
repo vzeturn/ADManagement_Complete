@@ -1,47 +1,220 @@
-<Window x:Class="ADManagement.WPF.Views.GroupSearchDialog"
+﻿<Window x:Class="ADManagement.WPF.Views.GroupSearchDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
-        Title="Search Groups" Height="500" Width="700" WindowStartupLocation="CenterOwner">
+        Title="Add User to Groups" Height="600" Width="700"
+        WindowStartupLocation="CenterOwner"
+        Background="{StaticResource BackgroundBrush}"
+        ResizeMode="CanResize">
+
     <Window.Resources>
-        <Style TargetType="Button">
+        <!-- CheckBox Style for Group Selection -->
+        <Style x:Key="GroupCheckBox" TargetType="CheckBox">
             <Setter Property="Margin" Value="4"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
+
+        <!-- Group Item Template -->
+        <DataTemplate x:Key="GroupItemTemplate">
+            <Border BorderBrush="#E0E0E0" BorderThickness="0,0,0,1" Background="Transparent"
+                   Padding="8,12">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <CheckBox Grid.Column="0" 
+                             IsChecked="{Binding IsSelected}" 
+                             VerticalAlignment="Center"
+                             Margin="0,0,12,0"/>
+
+                    <TextBlock Grid.Column="1" Text="👥" FontSize="20" 
+                              VerticalAlignment="Center" Margin="0,0,12,0"/>
+
+                    <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/>
+                        <TextBlock Text="{Binding Description}" FontSize="11" 
+                                  Foreground="#666666" Margin="0,2,0,0"
+                                  TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border Background="#E3F2FD" Padding="6,2" CornerRadius="3" Margin="4,0">
+                            <TextBlock Text="{Binding GroupScope}" FontSize="10" 
+                                      Foreground="{StaticResource PrimaryBrush}"/>
+                        </Border>
+                        <Border Background="#F3E5F5" Padding="6,2" CornerRadius="3" Margin="4,0">
+                            <TextBlock Text="{Binding GroupType}" FontSize="10" 
+                                      Foreground="#9C27B0"/>
+                        </Border>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </DataTemplate>
     </Window.Resources>
 
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <StackPanel Orientation="Horizontal" Margin="8">
-            <TextBox Width="400" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource ModernTextBox}" IsEnabled="{Binding IsLoading, Converter={StaticResource InverseBooleanConverter}}"/>
-            <Button Content="?? Search" Command="{Binding SearchGroupsCommand}" Style="{StaticResource PrimaryButton}" IsEnabled="{Binding IsLoading, Converter={StaticResource InverseBooleanConverter}}"/>
-        </StackPanel>
+        <!-- Header -->
+        <Border Grid.Row="0" Background="{StaticResource PrimaryBrush}" Padding="16">
+            <StackPanel>
+                <TextBlock Text="Add User to Groups" FontSize="18" FontWeight="Bold" Foreground="White"/>
+                <TextBlock Text="{Binding UserInfo}" FontSize="12" Foreground="White" 
+                          Opacity="0.9" Margin="0,4,0,0"/>
+            </StackPanel>
+        </Border>
 
-        <Grid Grid.Row="1">
-            <DataGrid ItemsSource="{Binding Groups}" SelectedItem="{Binding SelectedGroup}" AutoGenerateColumns="False" Margin="8" IsEnabled="{Binding IsLoading, Converter={StaticResource InverseBooleanConverter}}">
-                <DataGrid.Columns>
-                    <DataGridTextColumn Header="Group" Binding="{Binding Name}" />
-                    <DataGridTextColumn Header="Description" Binding="{Binding Description}" />
-                </DataGrid.Columns>
-            </DataGrid>
+        <!-- Search Section -->
+        <Border Grid.Row="1" Background="White" Padding="16" BorderBrush="#E0E0E0" BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
 
-            <Border Background="#AAFFFFFF" Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibilityConverter}}">
-                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                    <TextBlock Text="? Searching..." FontSize="18" FontWeight="Bold"/>
-                    <ProgressBar IsIndeterminate="True" Width="200" Height="16" Margin="8"/>
+                <!-- Search Box -->
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBox Grid.Column="0" 
+                            Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                            Padding="12,10" Height="40" VerticalContentAlignment="Center"
+                            BorderBrush="#CCCCCC" BorderThickness="1" FontSize="14">
+                        <TextBox.Style>
+                            <Style TargetType="TextBox">
+                                <Style.Triggers>
+                                    <Trigger Property="Text" Value="">
+                                        <Setter Property="Background">
+                                            <Setter.Value>
+                                                <VisualBrush Stretch="None" AlignmentX="Left">
+                                                    <VisualBrush.Visual>
+                                                        <TextBlock Text="🔍 Enter group name to search..." 
+                                                                  Foreground="#999999" 
+                                                                  Margin="12,0,0,0"
+                                                                  VerticalAlignment="Center"
+                                                                  FontSize="14"/>
+                                                    </VisualBrush.Visual>
+                                                </VisualBrush>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBox.Style>
+                    </TextBox>
+
+                    <Button Grid.Column="1" Content="🔍 Search" Width="100" Height="40" 
+                           Margin="8,0,0,0"
+                           Command="{Binding SearchGroupsCommand}"
+                           Style="{StaticResource PrimaryButton}"/>
+                </Grid>
+
+                <!-- Search Tips -->
+                <TextBlock Grid.Row="1" Margin="0,8,0,0" FontSize="11" Foreground="#666666">
+                    💡 Tip: Enter partial group name for fuzzy search. Leave empty and click Search to show all groups.
+                </TextBlock>
+            </Grid>
+        </Border>
+
+        <!-- Selection Controls -->
+        <Border Grid.Row="2" Background="#F5F5F5" Padding="12,8" BorderBrush="#E0E0E0" BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" VerticalAlignment="Center" FontSize="12">
+                    <Run Text="{Binding SelectedGroupsCount, Mode=OneWay}" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}"/>
+                    <Run Text=" group(s) selected  |  "/>
+                    <Run Text="{Binding TotalGroupsCount, Mode=OneWay}"/>
+                    <Run Text=" total"/>
+                </TextBlock>
+
+                <Button Grid.Column="1" Content="☑️ Select All" Height="28" Width="100" 
+                       Margin="0,0,8,0"
+                       Command="{Binding SelectAllCommand}"
+                       Style="{StaticResource SecondaryButton}" FontSize="11"/>
+
+                <Button Grid.Column="2" Content="☐ Clear All" Height="28" Width="100"
+                       Command="{Binding ClearAllCommand}"
+                       Style="{StaticResource SecondaryButton}" FontSize="11"/>
+            </Grid>
+        </Border>
+
+        <!-- Groups List -->
+        <Border Grid.Row="3" Background="White" BorderBrush="#E0E0E0" BorderThickness="1" Margin="16">
+            <Grid>
+                <!-- Empty State -->
+                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                           Visibility="{Binding ShowEmptyState, Converter={StaticResource BoolToVisibilityConverter}}">
+                    <TextBlock Text="🔍" FontSize="48" HorizontalAlignment="Center" Opacity="0.3"/>
+                    <TextBlock Text="No groups found" FontSize="16" Foreground="#999999" 
+                              HorizontalAlignment="Center" Margin="0,8,0,0"/>
+                    <TextBlock Text="Try a different search term or click Search to see all groups" 
+                              FontSize="12" Foreground="#CCCCCC" 
+                              HorizontalAlignment="Center" Margin="0,4,0,0"/>
                 </StackPanel>
-            </Border>
-        </Grid>
 
-        <StackPanel Orientation="Horizontal" Grid.Row="2" HorizontalAlignment="Right" Margin="8">
-            <Button Content="? Add Selected" Command="{Binding AddSelectedGroupCommand}" Style="{StaticResource PrimaryButton}" Height="32" IsEnabled="{Binding IsLoading, Converter={StaticResource InverseBooleanConverter}}"/>
-            <Button Content="Close" Command="{Binding CloseCommand}" Style="{StaticResource SecondaryButton}" Height="32"/>
-        </StackPanel>
+                <!-- Groups List -->
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                             Visibility="{Binding ShowEmptyState, Converter={StaticResource InverseBoolToVisibilityConverter}}">
+                    <ItemsControl ItemsSource="{Binding SearchResults}"
+                                 ItemTemplate="{StaticResource GroupItemTemplate}"/>
+                </ScrollViewer>
+
+                <!-- Loading Overlay -->
+                <Border Background="#F0FFFFFF" 
+                       Visibility="{Binding IsSearching, Converter={StaticResource BoolToVisibilityConverter}}">
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                        <TextBlock Text="⏳" FontSize="32" HorizontalAlignment="Center"/>
+                        <TextBlock Text="Searching groups..." FontSize="14" 
+                                  Foreground="#666666" Margin="0,8,0,0" HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+
+        <!-- Footer Buttons -->
+        <Border Grid.Row="4" Background="#F5F5F5" Padding="16" BorderBrush="#E0E0E0" BorderThickness="0,1,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" VerticalAlignment="Center" Foreground="#666666" FontSize="12">
+                    ⚠️ Selected groups will be added to the user
+                </TextBlock>
+
+                <Button Grid.Column="1" Content="➕ Add Selected" Width="130" Height="36" 
+                       Margin="0,0,8,0"
+                       Command="{Binding AddSelectedGroupsCommand}"
+                       IsEnabled="{Binding HasSelectedGroups}"
+                       Style="{StaticResource PrimaryButton}"/>
+
+                <Button Grid.Column="2" Content="✗ Cancel" Width="100" Height="36"
+                       Command="{Binding CancelCommand}"
+                       Style="{StaticResource SecondaryButton}"/>
+            </Grid>
+        </Border>
     </Grid>
 </Window>

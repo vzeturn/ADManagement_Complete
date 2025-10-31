@@ -1,116 +1,248 @@
 using ADManagement.Application.DTOs;
 using ADManagement.Application.Interfaces;
+using ADManagement.Domain.Common;
 using ADManagement.WPF.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
 using System.Collections.ObjectModel;
-using System.Threading.Tasks;
-using System;
+using System.Linq;
 
 namespace ADManagement.WPF.ViewModels;
 
+/// <summary>
+/// Wrapper class for group search results with selection
+/// </summary>
+public partial class GroupSearchItem : ObservableObject
+{
+    private readonly ADGroupDto _group;
+
+    public GroupSearchItem(ADGroupDto group)
+    {
+        _group = group;
+    }
+
+    [ObservableProperty]
+    private bool _isSelected;
+
+    public string Name => _group.Name;
+    public string Description => _group.Description;
+    public string DistinguishedName => _group.DistinguishedName;
+    public string GroupScope => _group.GroupScope;
+    public string GroupType => _group.GroupType;
+
+    public ADGroupDto Group => _group;
+}
+
+/// <summary>
+/// ViewModel for Group Search Dialog
+/// </summary>
 public partial class GroupSearchViewModel : ObservableObject
 {
-    private readonly IADUserService _userService;
+    private readonly IADGroupService _groupService;
     private readonly IDialogService _dialogService;
     private readonly ILogger<GroupSearchViewModel> _logger;
+
+    private string _username = string.Empty;
+
+    public GroupSearchViewModel(
+        IADGroupService groupService,
+        IDialogService dialogService,
+        ILogger<GroupSearchViewModel> logger)
+    {
+        _groupService = groupService;
+        _dialogService = dialogService;
+        _logger = logger;
+
+        SearchResults = new ObservableCollection<GroupSearchItem>();
+    }
+
+    #region Properties
 
     [ObservableProperty]
     private string _searchText = string.Empty;
 
     [ObservableProperty]
-    private ObservableCollection<ADGroupDto> _groups = new();
+    private ObservableCollection<GroupSearchItem> _searchResults;
 
     [ObservableProperty]
-    private ADGroupDto? _selectedGroup;
+    private bool _isSearching;
 
     [ObservableProperty]
-    private string _username = string.Empty; // user to add groups to
+    private bool _showEmptyState = true;
 
-    // Event to signal closing when used in code-behind window
-    public event EventHandler? CloseRequested;
+    [ObservableProperty]
+    private int _selectedGroupsCount;
 
-    public GroupSearchViewModel(
-        IADUserService userService,
-        IDialogService dialogService,
-        ILogger<GroupSearchViewModel> logger)
+    [ObservableProperty]
+    private int _totalGroupsCount;
+
+    [ObservableProperty]
+    private bool _hasSelectedGroups;
+
+    [ObservableProperty]
+    private string _userInfo = string.Empty;
+
+    public event EventHandler<bool>? CloseRequested;
+
+    #endregion
+
+    #region Public Methods
+
+    public void SetParameter(string username)
     {
-        _userService = userService;
-        _dialogService = dialogService;
-        _logger = logger;
+        _username = username;
+        UserInfo = $"Adding groups for user: {username}";
     }
 
-    public void SetParameter(object parameter)
+    public List<string> GetSelectedGroupDns()
     {
-        if (parameter is string username)
-        {
-            Username = username;
-        }
+        return SearchResults
+            .Where(g => g.IsSelected)
+            .Select(g => g.DistinguishedName)
+            .ToList();
     }
+
+    #endregion
+
+    #region Commands
 
     [RelayCommand]
     private async Task SearchGroupsAsync()
     {
-        if (string.IsNullOrWhiteSpace(_searchText))
-        {
-            _dialogService.ShowWarning("Enter search text", "Warning");
-            return;
-        }
-
         try
         {
-            var result = await _userService.SearchGroupsAsync(_searchText);
-            if (result.IsSuccess && result.Value != null)
+            IsSearching = true;
+            ShowEmptyState = false;
+
+            _logger.LogInformation("Searching groups with term: {SearchTerm}", SearchText);
+
+            Result<IEnumerable<ADGroupDto>> result;
+
+            // If search text is empty, get all groups
+            if (string.IsNullOrWhiteSpace(SearchText))
             {
-                Groups.Clear();
-                foreach (var g in result.Value)
-                {
-                    Groups.Add(g);
-                }
+                result = await _groupService.GetAllGroupsAsync();
             }
             else
             {
-                _dialogService.ShowError(result.Message, "Error");
+                // Perform fuzzy search
+                result = await _groupService.SearchGroupsAsync(SearchText);
             }
+
+            if (!result.IsSuccess || result.Value == null)
+            {
+                _dialogService.ShowError(result.Message, "Search Failed");
+                SearchResults.Clear();
+                ShowEmptyState = true;
+                return;
+            }
+
+            // Convert to GroupSearchItems
+            var items = result.Value
+                .Select(g => new GroupSearchItem(g))
+                .OrderBy(g => g.Name)
+                .ToList();
+
+            // Update collection
+            SearchResults.Clear();
+            foreach (var item in items)
+            {
+                // Subscribe to IsSelected changes
+                item.PropertyChanged += (s, e) =>
+                {
+                    if (e.PropertyName == nameof(GroupSearchItem.IsSelected))
+                    {
+                        UpdateSelectionCounts();
+                    }
+                };
+
+                SearchResults.Add(item);
+            }
+
+            TotalGroupsCount = SearchResults.Count;
+            ShowEmptyState = SearchResults.Count == 0;
+
+            if (SearchResults.Count > 0)
+            {
+                _logger.LogInformation("Found {Count} groups", SearchResults.Count);
+            }
+            else
+            {
+                _logger.LogInformation("No groups found matching search criteria");
+            }
+
+            UpdateSelectionCounts();
         }
         catch (Exception ex)
         {
-            _dialogService.ShowError($"Error searching groups: {ex.Message}", "Error");
             _logger.LogError(ex, "Error searching groups");
+            _dialogService.ShowError($"Error searching groups: {ex.Message}", "Error");
+            SearchResults.Clear();
+            ShowEmptyState = true;
+        }
+        finally
+        {
+            IsSearching = false;
         }
     }
 
     [RelayCommand]
-    private async Task AddSelectedGroupAsync()
+    private void SelectAll()
     {
-        if (SelectedGroup == null || string.IsNullOrWhiteSpace(Username))
+        foreach (var item in SearchResults)
         {
-            _dialogService.ShowWarning("Select a group.", "Warning");
-            return;
+            item.IsSelected = true;
         }
-
-        if (!_dialogService.ShowConfirmation($"Add user '{Username}' to group '{SelectedGroup.Name}'?", "Confirm"))
-            return;
-
-        var result = await _userService.AddUserToGroupAsync(Username, SelectedGroup.Name);
-        if (result.IsSuccess)
-        {
-            _dialogService.ShowSuccess(result.Message, "Success");
-            CloseRequested?.Invoke(this, EventArgs.Empty);
-        }
-        else
-        {
-            _dialogService.ShowError(result.Message, "Error");
-        }
+        UpdateSelectionCounts();
     }
 
     [RelayCommand]
-    private void Close()
+    private void ClearAll()
     {
-        CloseRequested?.Invoke(this, EventArgs.Empty);
+        foreach (var item in SearchResults)
+        {
+            item.IsSelected = false;
+        }
+        UpdateSelectionCounts();
     }
 
-    // Backing field kept for source generator compatibility
-    private readonly IDialogService _dialog_service = null!;
+    [RelayCommand]
+    private void AddSelectedGroups()
+    {
+        if (!HasSelectedGroups)
+        {
+            _dialogService.ShowWarning("Please select at least one group to add.", "No Selection");
+            return;
+        }
+
+        var selectedCount = SearchResults.Count(g => g.IsSelected);
+
+        if (!_dialogService.ShowConfirmation(
+            $"Are you sure you want to add the user to {selectedCount} selected group(s)?",
+            "Confirm Add to Groups"))
+        {
+            return;
+        }
+
+        CloseRequested?.Invoke(this, true);
+    }
+
+    [RelayCommand]
+    private void Cancel()
+    {
+        CloseRequested?.Invoke(this, false);
+    }
+
+    #endregion
+
+    #region Private Methods
+
+    private void UpdateSelectionCounts()
+    {
+        SelectedGroupsCount = SearchResults.Count(g => g.IsSelected);
+        HasSelectedGroups = SelectedGroupsCount > 0;
+    }
+
+    #endregion
 }

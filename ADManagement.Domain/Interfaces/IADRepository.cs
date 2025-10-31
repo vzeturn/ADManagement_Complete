@@ -1,4 +1,4 @@
-using ADManagement.Domain.Common;
+﻿using ADManagement.Domain.Common;
 using ADManagement.Domain.Entities;
 
 namespace ADManagement.Domain.Interfaces;
@@ -81,40 +81,29 @@ public interface IADRepository
         bool passwordNeverExpires,
         IEnumerable<string>? initialGroups,
         CancellationToken cancellationToken = default);
-    
+    Task<Result> UpdateUserAsync(ADUser user, CancellationToken cancellationToken = default);
+
     #endregion
-    
+
     #region Group Operations
-    
-    /// <summary>
-    /// Gets all groups from Active Directory
-    /// </summary>
+
+
+    // ⭐ Add Group methods
     Task<Result<IEnumerable<ADGroup>>> GetAllGroupsAsync(CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Gets groups that a user is a member of
-    /// </summary>
-    Task<Result<IEnumerable<string>>> GetUserGroupsAsync(string username, CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Adds a user to a group
-    /// </summary>
-    Task<Result> AddUserToGroupAsync(string username, string groupName, CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Removes a user from a group
-    /// </summary>
-    Task<Result> RemoveUserFromGroupAsync(string username, string groupName, CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Searches for groups matching the search term
-    /// </summary>
     Task<Result<IEnumerable<ADGroup>>> SearchGroupsAsync(string searchTerm, CancellationToken cancellationToken = default);
-    
+    Task<Result<ADGroup>> GetGroupByNameAsync(string groupName, CancellationToken cancellationToken = default);
+    Task<Result<IEnumerable<ADGroup>>> GetUserGroupsAsync(string username, CancellationToken cancellationToken = default);
+    Task<Result> AddUserToGroupAsync(string username, string groupName, CancellationToken cancellationToken = default);
+    Task<Result> RemoveUserFromGroupAsync(string username, string groupName, CancellationToken cancellationToken = default);
+    Task<Result<IEnumerable<ADUser>>> GetGroupMembersAsync(string groupName, CancellationToken cancellationToken = default);
+    Task<Result<ADGroup>> CreateGroupAsync(string groupName, string description, string groupScope, string groupType, string organizationalUnit, CancellationToken cancellationToken = default);
+    Task<Result> DeleteGroupAsync(string groupName, CancellationToken cancellationToken = default);
+    Task<Result> UpdateGroupAsync(ADGroup group, CancellationToken cancellationToken = default);
+
     #endregion
-    
+
     #region Organizational Unit Operations
-    
+
     /// <summary>
     /// Gets all Organizational Units
     /// </summary>

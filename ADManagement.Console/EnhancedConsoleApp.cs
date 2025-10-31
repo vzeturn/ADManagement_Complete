@@ -12,6 +12,7 @@ namespace ADManagement.Console;
 public class EnhancedConsoleApp
 {
     private readonly IADUserService _userService;
+    private readonly IADGroupService _groupService;
     private readonly IExportService _exportService;
     private readonly ADConnectionDiagnosticsService _diagnosticsService;
     private readonly ADConfiguration _config;
@@ -19,12 +20,14 @@ public class EnhancedConsoleApp
 
     public EnhancedConsoleApp(
         IADUserService userService,
+        IADGroupService groupService,
         IExportService exportService,
         ADConnectionDiagnosticsService diagnosticsService,
         ADConfiguration config,
         ILogger<EnhancedConsoleApp> logger)
     {
         _userService = userService;
+        _groupService = groupService;
         _exportService = exportService;
         _diagnosticsService = diagnosticsService;
         _config = config;
@@ -627,7 +630,7 @@ public class EnhancedConsoleApp
     {
         System.Console.WriteLine($"\n🔍 Fetching groups for user '{username}'...");
         
-        var result = await _userService.GetUserGroupsAsync(username);
+        var result = await _groupService.GetUserGroupsAsync(username);
         
         if (result.IsSuccess && result.Value != null)
         {
@@ -671,7 +674,7 @@ public class EnhancedConsoleApp
 
         System.Console.WriteLine($"\n➕ Adding user '{username}' to group '{groupName}'...");
         
-        var result = await _userService.AddUserToGroupAsync(username, groupName);
+        var result = await _groupService.AddUserToGroupAsync(username, groupName);
 
         if (result.IsSuccess)
         {
@@ -703,7 +706,7 @@ public class EnhancedConsoleApp
 
         System.Console.WriteLine($"\n➖ Removing user '{username}' from group '{groupName}'...");
         
-        var result = await _userService.RemoveUserFromGroupAsync(username, groupName);
+        var result = await _groupService.RemoveUserFromGroupAsync(username, groupName);
 
         if (result.IsSuccess)
         {

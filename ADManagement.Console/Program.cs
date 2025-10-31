@@ -1,12 +1,13 @@
 using ADManagement.Application;
 using ADManagement.Application.Interfaces;
+using ADManagement.Application.Services;
 using ADManagement.Infrastructure;
+using ADManagement.Infrastructure.Logging;
+using ADManagement.Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Serilog;
-using ADManagement.Infrastructure.Services;
-using ADManagement.Infrastructure.Logging;
 
 namespace ADManagement.Console;
 
@@ -69,6 +70,7 @@ class Program
     static async Task RunApplication(IServiceProvider services)
     {
         var userService = services.GetRequiredService<IADUserService>();
+        var groupService = services.GetRequiredService<IADGroupService>();
         var exportService = services.GetRequiredService<IExportService>();
 
         System.Console.WriteLine("╔══════════════════════════════════════════════╗");
@@ -123,7 +125,7 @@ class Program
                     await ExportGroups(exportService);
                     break;
                 case "8":
-                    await ManageUserGroups(userService);
+                    await ManageUserGroups(groupService);
                     break;
                 case "0":
                     running = false;
@@ -403,7 +405,7 @@ class Program
         System.Console.ResetColor();
     }
 
-    static async Task ManageUserGroups(IADUserService userService)
+    static async Task ManageUserGroups(IADGroupService groupService)
     {
         System.Console.WriteLine("\n--- Manage User Groups ---");
         System.Console.Write("Enter username: ");
@@ -424,7 +426,7 @@ class Program
         switch (choice)
         {
             case "1":
-                var groupsResult = await userService.GetUserGroupsAsync(username);
+                var groupsResult = await groupService.GetUserGroupsAsync(username);
                 if (groupsResult.IsSuccess && groupsResult.Value != null)
                 {
                     var groups = groupsResult.Value.ToList();
@@ -449,7 +451,7 @@ class Program
                 var addGroup = System.Console.ReadLine();
                 if (!string.IsNullOrWhiteSpace(addGroup))
                 {
-                    var addResult = await userService.AddUserToGroupAsync(username, addGroup);
+                    var addResult = await groupService.AddUserToGroupAsync(username, addGroup);
                     System.Console.ForegroundColor = addResult.IsSuccess ? ConsoleColor.Green : ConsoleColor.Red;
                     System.Console.WriteLine($"{(addResult.IsSuccess ? "✓" : "❌")} {addResult.Message}");
                     System.Console.ResetColor();
@@ -461,7 +463,7 @@ class Program
                 var removeGroup = System.Console.ReadLine();
                 if (!string.IsNullOrWhiteSpace(removeGroup))
                 {
-                    var removeResult = await userService.RemoveUserFromGroupAsync(username, removeGroup);
+                    var removeResult = await groupService.RemoveUserFromGroupAsync(username, removeGroup);
                     System.Console.ForegroundColor = removeResult.IsSuccess ? ConsoleColor.Green : ConsoleColor.Red;
                     System.Console.WriteLine($"{(removeResult.IsSuccess ? "✓" : "❌")} {removeResult.Message}");
                     System.Console.ResetColor();

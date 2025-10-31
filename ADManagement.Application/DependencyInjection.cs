@@ -1,4 +1,4 @@
-using ADManagement.Application.Interfaces;
+﻿using ADManagement.Application.Interfaces;
 using ADManagement.Application.Services;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -14,7 +14,8 @@ public static class DependencyInjection
         // Register Application Services
         services.AddScoped<IADUserService, ADUserService>();
         services.AddScoped<IExportService, ExportService>();
-        
+        // ⭐ Add this line
+        services.AddScoped<IADGroupService, ADGroupService>();
         return services;
     }
 }

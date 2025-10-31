@@ -68,6 +68,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Remove="Views\UserDetailWindow.xaml" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Page Include="Resources\Icons.xaml">
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
@@ -76,11 +80,10 @@
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>
-    <Page Include="Views\UsersView.xaml">
-      <SubType>Designer</SubType>
+    <Page Include="Views\UserDetailWindow.xaml">
       <Generator>MSBuild:Compile</Generator>
     </Page>
-    <Page Include="Views\UserDetailsView.xaml">
+    <Page Include="Views\UsersView.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>

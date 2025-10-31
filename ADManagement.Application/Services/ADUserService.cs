@@ -1,8 +1,9 @@
-using ADManagement.Application.DTOs;
+﻿using ADManagement.Application.DTOs;
 using ADManagement.Application.Interfaces;
 using ADManagement.Application.Mappings;
 using ADManagement.Application.Validators;
 using ADManagement.Domain.Common;
+using ADManagement.Domain.Entities;
 using ADManagement.Domain.Interfaces;
 using Microsoft.Extensions.Logging;
 
@@ -225,82 +226,29 @@ public class ADUserService : IADUserService
         var dto = result.Value.ToDto();
         return Result.Success(dto, result.Message);
     }
-    
-    public async Task<Result<IEnumerable<string>>> GetUserGroupsAsync(string username, CancellationToken cancellationToken = default)
+    public async Task<Result> UpdateUserAsync(ADUserDto user, CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Getting groups for user: {Username}", username);
-        
-        if (string.IsNullOrWhiteSpace(username))
+        try
         {
-            return Result.Failure<IEnumerable<string>>("Username cannot be empty");
-        }
-        
-        return await _repository.GetUserGroupsAsync(username, cancellationToken);
-    }
-    
-    public async Task<Result> AddUserToGroupAsync(string username, string groupName, CancellationToken cancellationToken = default)
-    {
-        _logger.LogInformation("Adding user {Username} to group {GroupName}", username, groupName);
-        
-        if (string.IsNullOrWhiteSpace(username))
-        {
-            return Result.Failure("Username cannot be empty");
-        }
-        
-        if (string.IsNullOrWhiteSpace(groupName))
-        {
-            return Result.Failure("Group name cannot be empty");
-        }
-        
-        return await _repository.AddUserToGroupAsync(username, groupName, cancellationToken);
-    }
-    
-    public async Task<Result> RemoveUserFromGroupAsync(string username, string groupName, CancellationToken cancellationToken = default)
-    {
-        _logger.LogInformation("Removing user {Username} from group {GroupName}", username, groupName);
-        
-        if (string.IsNullOrWhiteSpace(username))
-        {
-            return Result.Failure("Username cannot be empty");
-        }
-        
-        if (string.IsNullOrWhiteSpace(groupName))
-        {
-            return Result.Failure("Group name cannot be empty");
-        }
-        
-        return await _repository.RemoveUserFromGroupAsync(username, groupName, cancellationToken);
-    }
-    
-    public async Task<Result<IEnumerable<ADGroupDto>>> GetAllGroupsAsync(CancellationToken cancellationToken = default)
-    {
-        _logger.LogInformation("Getting all groups from repository");
-        var result = await _repository.GetAllGroupsAsync(cancellationToken);
-        if (!result.IsSuccess || result.Value == null)
-        {
-            return Result.Failure<IEnumerable<ADGroupDto>>(result.Message, result.Errors);
-        }
+            _logger.LogInformation("Updating user {Username}", user.SamAccountName);
 
-        var dtos = result.Value.ToDto();
-        return Result.Success(dtos, result.Message);
-    }
-    
-    public async Task<Result<IEnumerable<ADGroupDto>>> SearchGroupsAsync(string searchTerm, CancellationToken cancellationToken = default)
-    {
-        _logger.LogInformation("Searching groups: {SearchTerm}", searchTerm);
+            // Gọi repository để update AD
+            var updateResult = await _repository.UpdateUserAsync(ADUserDtoMapper.ToEntity(user), cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(searchTerm))
-        {
-            return Result.Failure<IEnumerable<ADGroupDto>>("Search term cannot be empty");
+            if (!updateResult.IsSuccess)
+            {
+                _logger.LogWarning("Failed to update user {Username}: {Message}", user.SamAccountName, updateResult.Message);
+                return Result.Failure(updateResult.Message);
+            }
+
+            _logger.LogInformation("User {Username} updated successfully", user.SamAccountName);
+            return Result.Success($"User {user.SamAccountName} updated successfully");
         }
-
-        var result = await _repository.SearchGroupsAsync(searchTerm, cancellationToken);
-        if (!result.IsSuccess || result.Value == null)
+        catch (Exception ex)
         {
-            return Result.Failure<IEnumerable<ADGroupDto>>(result.Message, result.Errors);
+            _logger.LogError(ex, "Error updating user {Username}", user.SamAccountName);
+            return Result.Failure($"Error updating user: {ex.Message}");
         }
-
-        var dtos = result.Value.ToDto();
-        return Result.Success(dtos, result.Message);
     }
+
 }

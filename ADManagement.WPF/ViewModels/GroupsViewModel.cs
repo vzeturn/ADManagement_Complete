@@ -14,6 +14,7 @@ namespace ADManagement.WPF.ViewModels;
 public partial class GroupsViewModel : ObservableObject
 {
     private readonly IADUserService _userService;
+    private readonly IADGroupService _groupService;
     private readonly IDialogService _dialogService;
     private readonly ILogger<GroupsViewModel> _logger;
 
@@ -37,10 +38,12 @@ public partial class GroupsViewModel : ObservableObject
 
     public GroupsViewModel(
         IADUserService userService,
+        IADGroupService groupService,
         IDialogService dialogService,
         ILogger<GroupsViewModel> logger)
     {
         _userService = userService;
+        _groupService = groupService;
         _dialogService = dialogService;
         _logger = logger;
     }
@@ -61,14 +64,14 @@ public partial class GroupsViewModel : ObservableObject
 
             _logger.LogInformation("Loading groups for user: {Username}", Username);
 
-            var result = await _userService.GetUserGroupsAsync(Username);
+            var result = await _groupService.GetUserGroupsAsync(Username);
 
             if (result.IsSuccess && result.Value != null)
             {
                 Groups.Clear();
                 foreach (var group in result.Value)
                 {
-                    Groups.Add(group);
+                    Groups.Add(group.Name);
                 }
 
                 StatusMessage = $"User is member of {Groups.Count} group(s)";
@@ -119,7 +122,7 @@ public partial class GroupsViewModel : ObservableObject
             IsLoading = true;
             StatusMessage = $"Adding {Username} to {GroupName}...";
 
-            var result = await _userService.AddUserToGroupAsync(Username, GroupName);
+            var result = await _groupService.AddUserToGroupAsync(Username, GroupName);
 
             if (result.IsSuccess)
             {
@@ -171,7 +174,7 @@ public partial class GroupsViewModel : ObservableObject
             IsLoading = true;
             StatusMessage = $"Removing {Username} from {SelectedGroup}...";
 
-            var result = await _userService.RemoveUserFromGroupAsync(Username, SelectedGroup);
+            var result = await _groupService.RemoveUserFromGroupAsync(Username, SelectedGroup);
 
             if (result.IsSuccess)
             {

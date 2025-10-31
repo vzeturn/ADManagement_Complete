@@ -1,21 +1,37 @@
 using System.Windows;
 using ADManagement.WPF.ViewModels;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace ADManagement.WPF.Views;
 
+/// <summary>
+/// Interaction logic for GroupSearchDialog.xaml
+/// </summary>
 public partial class GroupSearchDialog : Window
 {
     public GroupSearchDialog()
     {
         InitializeComponent();
-        this.Loaded += GroupSearchDialog_Loaded;
     }
 
-    private void GroupSearchDialog_Loaded(object? sender, RoutedEventArgs e)
+    /// <summary>
+    /// Constructor with username parameter
+    /// </summary>
+    public GroupSearchDialog(string username) : this()
     {
-        if (DataContext is GroupSearchViewModel vm)
+        // Get ViewModel from DI
+        var viewModel = App.Services?.GetRequiredService<GroupSearchViewModel>();
+        if (viewModel != null)
         {
-            vm.CloseRequested += (s, args) => this.Close();
+            DataContext = viewModel;
+            viewModel.SetParameter(username);
+
+            // Subscribe to close request
+            viewModel.CloseRequested += (s, success) =>
+            {
+                DialogResult = success;
+                Close();
+            };
         }
     }
 }

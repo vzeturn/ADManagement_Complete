@@ -276,6 +276,8 @@ public partial class App : System.Windows.Application
                 services.AddTransient<UserDetailsViewModel>();
                 services.AddTransient<GroupSearchViewModel>();
                 services.AddTransient<CreateUserViewModel>();
+                services.AddTransient<UserDetailWindowViewModel>();
+
 
                 // Add Windows (Transient)
                 services.AddTransient<MainWindow>();
