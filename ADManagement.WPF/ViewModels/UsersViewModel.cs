@@ -252,7 +252,7 @@ public partial class UsersViewModel : ObservableObject
             return;
         }
 
-        if (!SelectedUser.IsLockedOut)
+        if (!SelectedUser.IsLocked)
         {
             _dialogService.ShowInformation("User is not locked out.", "Information");
             return;

@@ -5,12 +5,14 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Serilog;
+using ADManagement.Infrastructure.Services;
+using ADManagement.Infrastructure.Logging;
 
 namespace ADManagement.Console;
 
 class Program
 {
-    static async Task<int> Main(string[] args)
+    static async Task Main(string[] args)
     {
         // Configure Serilog
         Log.Logger = new LoggerConfiguration()
@@ -26,16 +28,13 @@ class Program
             var host = CreateHostBuilder(args).Build();
 
             using var scope = host.Services.CreateScope();
-            var services = scope.ServiceProvider;
+            var app = scope.ServiceProvider.GetRequiredService<EnhancedConsoleApp>();
 
-            await RunApplication(services);
-
-            return 0;
+            await app.RunAsync();
         }
         catch (Exception ex)
         {
             Log.Fatal(ex, "Application terminated unexpectedly");
-            return 1;
         }
         finally
         {
@@ -60,8 +59,11 @@ class Program
                 // Add Application Services
                 services.AddApplicationServices();
 
+
                 // Add Infrastructure Services
                 services.AddInfrastructureServices(context.Configuration);
+                services.AddScoped<ADConnectionDiagnosticsService>();
+                services.AddScoped<EnhancedConsoleApp>();
             });
 
     static async Task RunApplication(IServiceProvider services)
@@ -253,7 +255,7 @@ class Program
             System.Console.WriteLine($"  Phone:           {user.PhoneNumber}");
             System.Console.WriteLine($"  Account Status:  {user.AccountStatus}");
             System.Console.WriteLine($"  Is Enabled:      {user.IsEnabled}");
-            System.Console.WriteLine($"  Is Locked:       {user.IsLockedOut}");
+            System.Console.WriteLine($"  Is Locked:       {user.IsLocked}");
             System.Console.WriteLine($"  Last Logon:      {user.LastLogonFormatted}");
             System.Console.WriteLine($"  Groups:          {user.MemberOf.Count}");
         }
