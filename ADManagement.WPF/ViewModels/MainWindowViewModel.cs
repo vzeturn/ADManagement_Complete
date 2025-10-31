@@ -23,8 +23,7 @@ public partial class MainWindowViewModel : ObservableObject
     public MainWindowViewModel(
         INavigationService navigationService,
         IDialogService dialogService,
-        ILogger<MainWindowViewModel> logger,
-        UsersViewModel usersViewModel)
+        ILogger<MainWindowViewModel> logger)
     {
         _navigationService = navigationService;
         _dialogService = dialogService;
