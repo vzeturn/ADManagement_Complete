@@ -12,6 +12,8 @@ using Serilog;
 using System.IO;
 using System.Windows;
 using System.Text;
+using ADManagement.Domain.Common;
+using System.Linq;
 
 namespace ADManagement.WPF;
 
@@ -44,125 +46,52 @@ public partial class App : System.Windows.Application
             await _host.StartAsync();
 
             var dialog = _host.Services.GetRequiredService<IDialogService>();
-            var credService = _host.Services.GetRequiredService<ICredentialService>();
-            var adConfig = _host.Services.GetRequiredService<ADManagement.Application.Configuration.ADConfiguration>();
+            var credProvider = _host.Services.GetRequiredService<ICredentialProvider>();
+            var mainWindow = _host.Services.GetRequiredService<MainWindow>();
 
-            // Load saved credentials if available
-            if (credService.TryLoadCredentials(out var savedUser, out var savedPass))
+            // Try connecting with current/saved credentials
+            bool isConnected = await TryConnectAsync();
+
+            if (!isConnected && credProvider.HasCredentials)
             {
-                adConfig.Username = savedUser;
-                adConfig.Password = savedPass;
-                Log.Information("Loaded saved credentials for user: {Username}", savedUser);
+                // Clear invalid saved credentials
+                credProvider.ClearCredentials();
             }
 
-            // Perform a quick connection test
-            var quickOk = await RunQuickConnectionTestWithScopeAsync();
+            // Show main window early
+            mainWindow.Show();
 
-            if (!quickOk)
+            if (!isConnected)
             {
-                // Allow attempts with credential prompt
-                const int maxAttempts = 3;
-                int attempt = 0;
-                bool authenticated = false;
+                // Try getting credentials from user
+                var creds = dialog.ShowCredentialsDialog(
+                    "Enter your domain credentials to connect to Active Directory:",
+                    "AD Authentication Required"
+                );
 
-                while (attempt < maxAttempts && !authenticated)
+                if (creds != null)
                 {
-                    attempt++;
-                    Log.Information("Prompting for credentials (attempt {Attempt}/{MaxAttempts})", attempt, maxAttempts);
-
-                    var creds = dialog.ShowCredentialsDialog(
-                        $"Enter domain credentials to connect to {adConfig.Domain}:", 
-                        "AD Credentials"
+                    credProvider.SetCredentials(
+                        creds.Value.Username ?? string.Empty,
+                        creds.Value.Password ?? string.Empty
                     );
 
-                    if (creds == null)
-                    {
-                        var cont = MessageBox.Show(
-                            "No credentials provided. Do you want to retry?",
-                            "Authentication Required",
-                            MessageBoxButton.YesNo,
-                            MessageBoxImage.Question
-                        );
-
-                        if (cont == MessageBoxResult.No)
-                        {
-                            Log.Information("User cancelled credential entry - shutting down");
-                            Shutdown();
-                            return;
-                        }
-                        else continue;
-                    }
-
-                    adConfig.Username = creds.Value.Username ?? string.Empty;
-                    adConfig.Password = creds.Value.Password ?? string.Empty;
-
-                    Log.Information("Attempting connection with new credentials for user: {Username}", adConfig.Username);
-                    quickOk = await RunQuickConnectionTestWithScopeAsync();
-
-                    if (quickOk)
-                    {
-                        authenticated = true;
-                        Log.Information("Successfully authenticated with provided credentials");
-                        
-                        // Save credentials for next run
-                        try
-                        {
-                            credService.SaveCredentials(adConfig.Username, adConfig.Password);
-                            Log.Information("Saved credentials for future use");
-                        }
-                        catch (Exception ex) 
-                        {
-                            Log.Warning(ex, "Failed to save credentials");
-                        }
-                        break;
-                    }
-
-                    var tryAgain = MessageBox.Show(
-                        $"Connection attempt {attempt} failed. Would you like to try again with different credentials?",
-                        "Connection Failed",
-                        MessageBoxButton.YesNo,
-                        MessageBoxImage.Warning
-                    );
-
-                    if (tryAgain == MessageBoxResult.No)
-                    {
-                        Log.Information("User chose not to retry after failed attempt - shutting down");
-                        Shutdown();
-                        return;
-                    }
-                }
-
-                bool windowShown = false;
-
-                if (!authenticated && !quickOk)
-                {
-                    Log.Warning("All authentication attempts failed - opening settings");
-                    
-                    var mainWindow = _host.Services.GetRequiredService<MainWindow>();
-                    mainWindow.Show();
-                    windowShown = true;
-
-                    var nav = _host.Services.GetRequiredService<INavigationService>();
-                    nav.NavigateTo<SettingsViewModel>();
-
-                    MessageBox.Show(
-                        "Connection failed after multiple attempts. The application will open in Settings mode so you can update the AD configuration.",
-                        "Connection Failed",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning
-                    );
-                }
-
-                if (!windowShown)
-                {
-                    var mainWindow = _host.Services.GetRequiredService<MainWindow>();
-                    mainWindow.Show();
+                    isConnected = await TryConnectAsync();
                 }
             }
-            else
+
+            if (!isConnected)
             {
-                var mainWindow = _host.Services.GetRequiredService<MainWindow>();
-                mainWindow.Show();
+                Log.Warning("No valid credentials provided - opening settings");
+                var nav = _host.Services.GetRequiredService<INavigationService>();
+                nav.NavigateTo<SettingsViewModel>();
+
+                MessageBox.Show(
+                    "Please configure your Active Directory connection settings and credentials.",
+                    "Configuration Required",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information
+                );
             }
 
             Log.Information("Application started successfully");
@@ -172,7 +101,7 @@ public partial class App : System.Windows.Application
             Log.Fatal(ex, "Application failed to start");
             MessageBox.Show(
                 $"Failed to start application: {ex.Message}\n\nCheck the logs for more details.",
-                "Fatal Error", 
+                "Fatal Error",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error
             );
@@ -180,39 +109,66 @@ public partial class App : System.Windows.Application
         }
     }
 
-    private async Task<bool> RunQuickConnectionTestWithScopeAsync()
+    private async Task<bool> TryConnectAsync()
     {
         try
         {
             using var scope = _host!.Services.CreateScope();
             var userService = scope.ServiceProvider.GetRequiredService<IADUserService>();
+
+            // Log connection info (mask password)
+            var adConfig = scope.ServiceProvider.GetRequiredService<ADManagement.Application.Configuration.ADConfiguration>();
+            var credProvider = scope.ServiceProvider.GetService<ICredentialProvider>();
+
+            var usernameDisplay = string.IsNullOrWhiteSpace(adConfig.Username)
+                ? "(using current Windows credentials)"
+                : adConfig.Username;
+
+            var maskedPassword = string.IsNullOrWhiteSpace(adConfig.Password) ? "(none)" : new string('*', 8);
+            var credSource = credProvider != null && credProvider.HasCredentials ? "CredentialProvider (cached)" : "Configuration / Environment";
+
+            Log.Information("Attempting AD connection: Domain={Domain}, LdapServer={LdapServer}, Port={Port}, UseSSL={UseSSL}, Username={UsernameDisplay}, CredSource={CredSource}",
+                adConfig.Domain ?? "(none)",
+                string.IsNullOrWhiteSpace(adConfig.LdapServer) ? "(auto)" : adConfig.LdapServer,
+                adConfig.Port, adConfig.UseSSL, usernameDisplay, credSource);
+
             var result = await userService.TestConnectionAsync();
-            
+
             if (!result.IsSuccess)
             {
                 var message = "Failed to connect to Active Directory. ";
                 if (result.Errors?.Any() == true)
                 {
-                    if (result.Errors.Any(e => e.Contains("server could not be contacted")))
+                    var error = result.Errors.FirstOrDefault()?.ToLowerInvariant() ?? string.Empty;
+
+                    if (error.Contains("server could not be contacted") || error.Contains("server down"))
                     {
-                        message += "\n\nPossible causes:" +
-                                  "\n- LDAP server address is incorrect" +
-                                  "\n- Server is not reachable on the network" +
-                                  "\n- Firewall is blocking LDAP ports (389/636)" +
-                                  "\n\nPlease verify your network connection and LDAP settings.";
+                        message += "\n\nNetwork Connection Error:" +
+                                  "\n- Check if the LDAP server address is correct" +
+                                  "\n- Verify your network connection" +
+                                  "\n- Ensure LDAP ports (389/636) are not blocked";
                     }
-                    else if (result.Errors.Any(e => e.Contains("invalid credentials")))
+                    else if (error.Contains("invalid credentials") || error.Contains("authentication"))
                     {
-                        message += "\n\nThe provided credentials are invalid." +
-                                  "\nPlease verify your username and password.";
+                        message += "\n\nAuthentication Error:" +
+                                  "\n- Verify your username and password are correct" +
+                                  "\n- Ensure your account is not locked or expired" +
+                                  "\n- Check if you have permission to access the domain";
                     }
                     else
                     {
-                        message += "\n\n" + string.Join("\n", result.Errors);
+                        message += "\n\nDetails: " + string.Join("\n", result.Errors);
                     }
                 }
 
                 Log.Warning("Connection test failed: {Message}", message);
+
+                MessageBox.Show(
+                    message,
+                    "Connection Failed",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning
+                );
             }
 
             return result.IsSuccess;
@@ -221,16 +177,25 @@ public partial class App : System.Windows.Application
         {
             var errorMessage = ex switch
             {
-                System.DirectoryServices.AccountManagement.PrincipalServerDownException => 
+                System.DirectoryServices.AccountManagement.PrincipalServerDownException =>
                     "Could not reach the LDAP server. Please verify the server address and your network connection.",
-                System.DirectoryServices.Protocols.LdapException ldapEx => 
+                System.DirectoryServices.Protocols.LdapException ldapEx =>
                     $"LDAP Error: {ldapEx.Message}. Please check your connection settings.",
-                System.Security.Authentication.AuthenticationException => 
+                System.Security.Authentication.AuthenticationException =>
                     "Authentication failed. Please verify your credentials.",
                 _ => $"Unexpected error: {ex.Message}"
             };
 
-            Log.Warning(ex, "Quick connection test failed: {ErrorMessage}", errorMessage);
+            // Log full exception with stack trace
+            Log.Warning(ex, "Connection test failed: {ErrorMessage}", errorMessage);
+
+            MessageBox.Show(
+                errorMessage,
+                "Connection Error",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error
+            );
+
             return false;
         }
     }
@@ -289,7 +254,8 @@ public partial class App : System.Windows.Application
                 // Add WPF Services
                 services.AddSingleton<IDialogService, DialogService>();
                 services.AddSingleton<INavigationService, NavigationService>();
-                services.AddSingleton<ICredentialService, CredentialService>();
+                services.AddSingleton<ADManagement.Application.Interfaces.ICredentialService, ADManagement.Infrastructure.Services.CredentialService>();
+                services.AddSingleton<ICredentialProvider, CredentialProvider>();
 
                 // Add ViewModels (Transient - new instance each time)
                 services.AddTransient<MainWindowViewModel>();

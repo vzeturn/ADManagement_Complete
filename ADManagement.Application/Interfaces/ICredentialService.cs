@@ -1,4 +1,4 @@
-namespace ADManagement.WPF.Services;
+namespace ADManagement.Application.Interfaces;
 
 public interface ICredentialService
 {
