@@ -33,11 +33,15 @@ public partial class App : System.Windows.Application
 
         try
         {
+            Log.Information("Starting ADManagement WPF Application");
+
             _host = CreateHostBuilder(e.Args).Build();
             await _host.StartAsync();
 
             var mainWindow = _host.Services.GetRequiredService<MainWindow>();
             mainWindow.Show();
+
+            Log.Information("Application started successfully");
         }
         catch (Exception ex)
         {
@@ -50,6 +54,8 @@ public partial class App : System.Windows.Application
 
     protected override async void OnExit(ExitEventArgs e)
     {
+        Log.Information("Application shutting down");
+
         if (_host != null)
         {
             await _host.StopAsync();
@@ -84,14 +90,14 @@ public partial class App : System.Windows.Application
                 services.AddSingleton<IDialogService, DialogService>();
                 services.AddSingleton<INavigationService, NavigationService>();
 
-                // Add ViewModels
+                // Add ViewModels (Transient - new instance each time)
                 services.AddTransient<MainWindowViewModel>();
                 services.AddTransient<UsersViewModel>();
                 services.AddTransient<GroupsViewModel>();
                 services.AddTransient<ExportViewModel>();
                 services.AddTransient<SettingsViewModel>();
 
-                // Add Views
+                // Add Main Window (Singleton)
                 services.AddSingleton<MainWindow>();
             });
 }
