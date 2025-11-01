@@ -7,11 +7,14 @@ public class ADUser
 {
     // Basic Information
     public string Username { get; set; } = string.Empty;
+    public string UserPrincipalName { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
     public string FirstName { get; set; } = string.Empty;
     public string LastName { get; set; } = string.Empty;
-    
+    public string MiddleName { get; set; } = string.Empty;
+    public string Initials { get; set; } = string.Empty;
+
     // Organization Information
     public string Department { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
@@ -21,6 +24,7 @@ public class ADUser
     
     // Contact Information
     public string PhoneNumber { get; set; } = string.Empty;
+    public string HomePhone { get; set; } = string.Empty;
     public string MobileNumber { get; set; } = string.Empty;
     public string FaxNumber { get; set; } = string.Empty;
     

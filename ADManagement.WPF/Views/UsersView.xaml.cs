@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Windows.Controls;
+using System.Windows.Data;
 
 namespace ADManagement.WPF.Views;
 
@@ -11,4 +13,5 @@ public partial class UsersView : UserControl
     {
         InitializeComponent();
     }
+    
 }

@@ -226,10 +226,10 @@ public class ADRepository : IADRepository, IDisposable
                 {
                     _logger.LogWarning(ex, "Failed to map user from search result");
                 }
-                finally
-                {
-                    result?.Dispose(); // ✨ CRITICAL: Dispose each result
-                }
+                //finally
+                //{
+                //    result?.Dispose(); // ✨ CRITICAL: Dispose each result
+                //}
             }
 
             _logger.LogInformation("Retrieved {Count} users", users.Count);
@@ -293,10 +293,10 @@ public class ADRepository : IADRepository, IDisposable
                 {
                     _logger.LogWarning(ex, "Failed to map user, skipping");
                 }
-                finally
-                {
-                    result?.Dispose(); // ✨ CRITICAL: Dispose immediately
-                }
+                //finally
+                //{
+                //    result?.Dispose(); // ✨ CRITICAL: Dispose immediately
+                //}
 
                 if (user != null)
                 {
@@ -351,10 +351,10 @@ public class ADRepository : IADRepository, IDisposable
                 {
                     _logger.LogWarning(ex, "Failed to map user from OU");
                 }
-                finally
-                {
-                    result?.Dispose();
-                }
+                //finally
+                //{
+                //    result?.Dispose();
+                //}
 
                 if (user != null)
                 {
@@ -408,7 +408,7 @@ public class ADRepository : IADRepository, IDisposable
             }
 
             var user = MapSearchResultToADUser(results[0]);
-            results[0]?.Dispose();
+            //results[0]?.Dispose();
 
             _logger.LogInformation("Successfully retrieved user: {Username}", username);
             return Result.Success(user);
@@ -453,7 +453,7 @@ public class ADRepository : IADRepository, IDisposable
             }
 
             var user = MapSearchResultToADUser(results[0]);
-            results[0]?.Dispose();
+            //results[0]?.Dispose();
 
             return Result.Success(user);
         }
@@ -531,10 +531,10 @@ public class ADRepository : IADRepository, IDisposable
                 {
                     _logger.LogWarning(ex, "Failed to map user from search result");
                 }
-                finally
-                {
-                    result?.Dispose();
-                }
+                //finally
+                //{
+                //    //result?.Dispose();
+                //}
             }
 
             // Cache results
@@ -906,7 +906,7 @@ public class ADRepository : IADRepository, IDisposable
                 }
             }
 
-            groupResult?.Dispose();
+            //groupResult?.Dispose();
 
             if (memberDns.Count == 0)
             {
@@ -995,10 +995,10 @@ public class ADRepository : IADRepository, IDisposable
                             {
                                 _logger.LogWarning(ex, "Failed to map user from batch");
                             }
-                            finally
-                            {
-                                result?.Dispose();
-                            }
+                            //finally
+                            //{
+                            //    result?.Dispose();
+                            //}
                         }
                     }
                     catch (Exception ex)
@@ -1057,10 +1057,10 @@ public class ADRepository : IADRepository, IDisposable
                 {
                     _logger.LogWarning(ex, "Failed to map group from search result");
                 }
-                finally
-                {
-                    result?.Dispose();
-                }
+                //finally
+                //{
+                //    result?.Dispose();
+                //}
             }
 
             _logger.LogInformation("Retrieved {Count} groups", groups.Count);
@@ -1130,10 +1130,10 @@ public class ADRepository : IADRepository, IDisposable
                 {
                     _logger.LogWarning(ex, "Failed to map group");
                 }
-                finally
-                {
-                    result?.Dispose();
-                }
+                //finally
+                //{
+                //    result?.Dispose();
+                //}
             }
 
             _logger.LogInformation("Found {Count} groups matching search term", groups.Count);
@@ -1186,7 +1186,7 @@ public class ADRepository : IADRepository, IDisposable
             }
 
             var group = MapSearchResultToADGroup(results[0]);
-            results[0]?.Dispose();
+            //results?.Dispose();
 
             _logger.LogInformation("Successfully retrieved group: {GroupName}", groupName);
             return Result.Success(group);
@@ -1248,7 +1248,7 @@ public class ADRepository : IADRepository, IDisposable
                 }
             }
 
-            userResult?.Dispose();
+            //userResult?.Dispose();
 
             if (groupDns.Count == 0)
             {
@@ -1336,10 +1336,10 @@ public class ADRepository : IADRepository, IDisposable
                             {
                                 _logger.LogWarning(ex, "Failed to map group from batch");
                             }
-                            finally
-                            {
-                                result?.Dispose();
-                            }
+                            //finally
+                            //{
+                            //    result?.Dispose();
+                            //}
                         }
                     }
                     catch (Exception ex)
@@ -1605,10 +1605,10 @@ public class ADRepository : IADRepository, IDisposable
                 {
                     _logger.LogWarning(ex, "Failed to map OU");
                 }
-                finally
-                {
-                    result?.Dispose();
-                }
+                //finally
+                //{
+                //    result?.Dispose();
+                //}
             }
 
             _logger.LogInformation("Retrieved {Count} OUs", ous.Count);

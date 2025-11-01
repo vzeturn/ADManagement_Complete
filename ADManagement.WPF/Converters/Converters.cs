@@ -136,3 +136,40 @@ public class BoolToEnabledColorConverter : IValueConverter
         throw new NotImplementedException();
     }
 }
+
+public class InverseBoolConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        if (value is bool boolValue)
+            return !boolValue;
+        return false;
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        if (value is bool boolValue)
+            return !boolValue;
+        return false;
+    }
+}
+public class EqualsZeroConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        if (value == null) return true;
+
+        if (value is int intValue)
+            return intValue == 0;
+
+        if (value is double doubleValue)
+            return Math.Abs(doubleValue) < 0.0001;
+
+        return false;
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        throw new NotImplementedException();
+    }
+}
