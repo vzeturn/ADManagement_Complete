@@ -1,67 +1,42 @@
 ﻿using ADManagement.Domain.Common;
 using ADManagement.Domain.Entities;
+using System.Runtime.CompilerServices;
 
 namespace ADManagement.Domain.Interfaces;
 
 /// <summary>
 /// Repository interface for Active Directory operations
+/// ✨ OPTIMIZED with streaming support
 /// </summary>
 public interface IADRepository
 {
     #region Connection
-    
-    /// <summary>
-    /// Tests the connection to Active Directory
-    /// </summary>
+
     Task<Result> TestConnectionAsync(CancellationToken cancellationToken = default);
-    
+
     #endregion
-    
+
     #region User Operations
-    
-    /// <summary>
-    /// Gets all users from Active Directory
-    /// </summary>
+
     Task<Result<IEnumerable<ADUser>>> GetAllUsersAsync(CancellationToken cancellationToken = default);
-    
+
     /// <summary>
-    /// Gets users from a specific Organizational Unit
+    /// ✨ NEW: Stream users asynchronously to avoid loading all in memory
     /// </summary>
+    IAsyncEnumerable<ADUser> StreamUsersAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// ✨ NEW: Stream users from specific OU
+    /// </summary>
+    IAsyncEnumerable<ADUser> StreamUsersByOUAsync(string ouPath, CancellationToken cancellationToken = default);
+
     Task<Result<IEnumerable<ADUser>>> GetUsersByOUAsync(string ouPath, CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Gets a user by username
-    /// </summary>
     Task<Result<ADUser>> GetUserByUsernameAsync(string username, CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Gets a user by email address
-    /// </summary>
     Task<Result<ADUser>> GetUserByEmailAsync(string email, CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Searches for users matching the search term
-    /// </summary>
     Task<Result<IEnumerable<ADUser>>> SearchUsersAsync(string searchTerm, CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Changes a user's password
-    /// </summary>
     Task<Result> ChangePasswordAsync(string username, string newPassword, bool mustChangeAtNextLogon, CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Enables or disables a user account
-    /// </summary>
     Task<Result> SetUserStatusAsync(string username, bool enabled, CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Unlocks a user account
-    /// </summary>
     Task<Result> UnlockUserAsync(string username, CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Creates a new user in Active Directory
-    /// </summary>
     Task<Result<ADUser>> CreateUserAsync(
         string username,
         string firstName,
@@ -87,8 +62,6 @@ public interface IADRepository
 
     #region Group Operations
 
-
-    // ⭐ Add Group methods
     Task<Result<IEnumerable<ADGroup>>> GetAllGroupsAsync(CancellationToken cancellationToken = default);
     Task<Result<IEnumerable<ADGroup>>> SearchGroupsAsync(string searchTerm, CancellationToken cancellationToken = default);
     Task<Result<ADGroup>> GetGroupByNameAsync(string groupName, CancellationToken cancellationToken = default);
@@ -104,10 +77,7 @@ public interface IADRepository
 
     #region Organizational Unit Operations
 
-    /// <summary>
-    /// Gets all Organizational Units
-    /// </summary>
     Task<Result<IEnumerable<OrganizationalUnit>>> GetAllOUsAsync(CancellationToken cancellationToken = default);
-    
+
     #endregion
 }

@@ -1,23 +1,40 @@
-using ADManagement.Application.DTOs;
+﻿using ADManagement.Application.DTOs;
 using ADManagement.Application.Interfaces;
+using ADManagement.Domain.Interfaces;
 using ADManagement.WPF.Services;
 using ADManagement.WPF.Views;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
+using System;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Data;
+using System.Windows.Threading;
 
 namespace ADManagement.WPF.ViewModels;
 
 /// <summary>
-/// ViewModel for Users View
+/// ✨ OPTIMIZED ViewModel for Users View
+/// - Streaming load
+/// - Batch UI updates
+/// - Progress feedback
+/// - Cancellation support
+/// - Debounced search
 /// </summary>
 public partial class UsersViewModel : ObservableObject
 {
     private readonly IADUserService _userService;
     private readonly IDialogService _dialogService;
     private readonly ILogger<UsersViewModel> _logger;
+
+    // ✨ NEW: Cancellation support
+    private CancellationTokenSource? _loadCancellation;
+    private CancellationTokenSource? _searchCancellation;
 
     public UsersViewModel(
         IADUserService userService,
@@ -29,12 +46,19 @@ public partial class UsersViewModel : ObservableObject
         _logger = logger;
 
         Users = new ObservableCollection<ADUserDto>();
+
+        // ✨ NEW: Setup collection view for filtering
+        UsersView = CollectionViewSource.GetDefaultView(Users);
+        UsersView.Filter = FilterUsers;
     }
 
     #region Properties
 
     [ObservableProperty]
     private ObservableCollection<ADUserDto> _users;
+
+    [ObservableProperty]
+    private ICollectionView? _usersView;
 
     [ObservableProperty]
     private ADUserDto? _selectedUser;
@@ -51,6 +75,19 @@ public partial class UsersViewModel : ObservableObject
     [ObservableProperty]
     private bool _includeDisabledAccounts = true;
 
+    // ✨ NEW: Progress tracking
+    [ObservableProperty]
+    private double _loadingProgress;
+
+    [ObservableProperty]
+    private int _totalCount;
+
+    [ObservableProperty]
+    private int _loadedCount;
+
+    [ObservableProperty]
+    private string _loadingMessage = string.Empty;
+
     #endregion
 
     #region Lifecycle
@@ -64,52 +101,146 @@ public partial class UsersViewModel : ObservableObject
 
     #region Commands
 
-    [RelayCommand]
+    /// <summary>
+    /// ✨ OPTIMIZED: Load users with streaming and progress feedback
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanLoadUsers))]
     private async Task LoadUsersAsync()
     {
+        // Cancel any existing operation
+        _loadCancellation?.Cancel();
+        _loadCancellation = new CancellationTokenSource();
+        var cancellationToken = _loadCancellation.Token;
+
         try
         {
             IsLoading = true;
+            LoadingProgress = 0;
+            LoadedCount = 0;
+            TotalCount = 0;
+            LoadingMessage = "Initializing...";
             StatusMessage = "Loading users...";
-            _logger.LogInformation("Loading users");
 
-            var result = await _userService.GetAllUsersAsync();
+            _logger.LogInformation("Starting to load users (optimized)");
 
-            if (result.IsSuccess && result.Value != null)
+            // Clear existing
+            Users.Clear();
+
+            // ✨ NEW: Progress reporter
+            var progress = new Progress<LoadProgress>(p =>
             {
-                var users = result.Value;
+                LoadingProgress = p.PercentComplete;
+                LoadedCount = p.ProcessedCount;
+                TotalCount = p.TotalCount > 0 ? p.TotalCount : LoadedCount;
+                LoadingMessage = $"Loading... {LoadedCount:N0} users";
+            });
 
-                if (!IncludeDisabledAccounts)
-                {
-                    users = users.Where(u => u.IsEnabled);
-                }
+            var tempList = new List<ADUserDto>();
+            var updateInterval = 500; // Update UI every 500 items
 
-                Users.Clear();
-                foreach (var user in users.OrderBy(u => u.DisplayName))
-                {
-                    Users.Add(user);
-                }
-
-                StatusMessage = $"Loaded {Users.Count} user(s)";
-                _logger.LogInformation("Loaded {Count} users", Users.Count);
-            }
-            else
+            // ✨ NEW: Stream users for memory efficiency
+            await foreach (var user in _userService.StreamUsersAsync(cancellationToken))
             {
-                _dialogService.ShowError(result.Message, "Load Failed");
-                StatusMessage = "Failed to load users";
+                // Filter if needed
+                if (!IncludeDisabledAccounts && !user.IsEnabled)
+                    continue;
+
+                tempList.Add(user);
+
+                // ✨ OPTIMIZATION: Batch update UI
+                if (tempList.Count >= updateInterval)
+                {
+                    await UpdateUIAsync(tempList);
+                    tempList.Clear();
+
+                    ((IProgress<LoadProgress>)progress).Report(new LoadProgress
+                    {
+                        ProcessedCount = LoadedCount,
+                        CurrentPhase = "Loading"
+                    });
+                }
             }
+
+            // Final batch
+            if (tempList.Count > 0)
+            {
+                await UpdateUIAsync(tempList);
+            }
+
+            StatusMessage = $"Loaded {LoadedCount:N0} users successfully";
+            LoadingMessage = string.Empty;
+
+            _logger.LogInformation("Successfully loaded {Count} users", LoadedCount);
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Loading cancelled";
+            LoadingMessage = "Cancelled";
+            _logger.LogInformation("User loading cancelled");
         }
         catch (Exception ex)
         {
+            StatusMessage = "Error loading users";
+            LoadingMessage = "Error";
             _dialogService.ShowError($"Error loading users: {ex.Message}", "Error");
             _logger.LogError(ex, "Error loading users");
-            StatusMessage = "Error loading users";
         }
         finally
         {
             IsLoading = false;
+            LoadingProgress = 0;
         }
     }
+
+    /// <summary>
+    /// ✨ NEW: Batch UI update to avoid UI freezing
+    /// </summary>
+    private async Task UpdateUIAsync(List<ADUserDto> newUsers)
+    {
+        await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+        {
+            // ✨ OPTIMIZATION: Suspend collection synchronization for batch add
+            BindingOperations.DisableCollectionSynchronization(Users);
+
+            try
+            {
+                foreach (var user in newUsers)
+                {
+                    Users.Add(user);
+                }
+            }
+            finally
+            {
+                // Re-enable synchronization
+                BindingOperations.EnableCollectionSynchronization(Users, new object());
+                UsersView?.Refresh();
+            }
+
+            LoadedCount = Users.Count;
+
+        }, DispatcherPriority.Background); // ✨ IMPORTANT: Background priority prevents UI freezing
+    }
+
+    /// <summary>
+    /// ✨ NEW: Cancel loading operation
+    /// </summary>
+    [RelayCommand]
+    private void CancelLoading()
+    {
+        _loadCancellation?.Cancel();
+        LoadingMessage = "Cancelling...";
+        StatusMessage = "Cancelling...";
+    }
+
+    private bool CanLoadUsers() => !IsLoading;
+
+    [RelayCommand(CanExecute = nameof(CanRefresh))]
+    private async Task RefreshAsync()
+    {
+        await LoadUsersAsync();
+    }
+
+    private bool CanRefresh() => !IsLoading;
 
     [RelayCommand]
     private async Task SearchUsersAsync()
@@ -172,7 +303,6 @@ public partial class UsersViewModel : ObservableObject
 
         if (result == true)
         {
-            // Reload users after creating new user
             _ = LoadUsersAsync();
         }
     }
@@ -330,9 +460,6 @@ public partial class UsersViewModel : ObservableObject
         }
     }
 
-    /// <summary>
-    /// Command to open User Detail Window (triggered by double-click)
-    /// </summary>
     [RelayCommand]
     private void OpenUserDetail()
     {
@@ -349,7 +476,7 @@ public partial class UsersViewModel : ObservableObject
             var detailWindow = new UserDetailWindow(SelectedUser.SamAccountName);
             detailWindow.ShowDialog();
 
-            // Reload users after closing detail window to reflect any changes
+            // Reload users after closing detail window
             _ = LoadUsersAsync();
         }
         catch (Exception ex)
@@ -363,10 +490,71 @@ public partial class UsersViewModel : ObservableObject
 
     #region Private Methods
 
+    /// <summary>
+    /// ✨ NEW: Debounced search on text change
+    /// </summary>
+    partial void OnSearchTextChanged(string value)
+    {
+        // Cancel previous search
+        _searchCancellation?.Cancel();
+        _searchCancellation = new CancellationTokenSource();
+
+        // Debounce search
+        Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(300, _searchCancellation.Token); // 300ms debounce
+
+                await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    UsersView?.Refresh();
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                // Search cancelled, ignore
+            }
+        }, _searchCancellation.Token);
+    }
+
+    /// <summary>
+    /// ✨ NEW: Filter function for collection view
+    /// </summary>
+    private bool FilterUsers(object obj)
+    {
+        if (string.IsNullOrWhiteSpace(SearchText))
+            return true;
+
+        if (obj is ADUserDto user)
+        {
+            var searchLower = SearchText.ToLowerInvariant();
+            return user.Username?.Contains(searchLower, StringComparison.OrdinalIgnoreCase) == true ||
+                   user.DisplayName?.Contains(searchLower, StringComparison.OrdinalIgnoreCase) == true ||
+                   user.Email?.Contains(searchLower, StringComparison.OrdinalIgnoreCase) == true ||
+                   user.Department?.Contains(searchLower, StringComparison.OrdinalIgnoreCase) == true;
+        }
+
+        return false;
+    }
+
     partial void OnIncludeDisabledAccountsChanged(bool value)
     {
         _ = LoadUsersAsync();
     }
 
     #endregion
+}
+
+/// <summary>
+/// ✨ NEW: Progress information for loading
+/// </summary>
+public class LoadProgress
+{
+    public int ProcessedCount { get; set; }
+    public int TotalCount { get; set; }
+    public string CurrentPhase { get; set; } = string.Empty;
+    public double PercentComplete => TotalCount > 0
+        ? (double)ProcessedCount / TotalCount * 100
+        : 0;
 }

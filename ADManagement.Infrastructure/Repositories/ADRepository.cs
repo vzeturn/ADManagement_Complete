@@ -1,5 +1,4 @@
 ﻿using ADManagement.Application.Configuration;
-using ADManagement.Application.DTOs;
 using ADManagement.Domain.Common;
 using ADManagement.Domain.Entities;
 using ADManagement.Domain.Exceptions;
@@ -8,128 +7,166 @@ using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 using System.DirectoryServices;
 using System.DirectoryServices.AccountManagement;
-using System.DirectoryServices.Protocols;
-using System.Net;
 using System.Net.Sockets;
-using System.Text;
+using System.Runtime.CompilerServices;
 
 namespace ADManagement.Infrastructure.Repositories;
 
 /// <summary>
-/// Repository implementation for Active Directory operations
+/// ✨ OPTIMIZED Repository implementation for Active Directory operations
+/// - Connection pooling
+/// - Batch operations
+/// - Streaming support
+/// - Proper resource disposal
+/// - Parallel processing
 /// </summary>
-
-public class ADRepository : IADRepository
+public class ADRepository : IADRepository, IDisposable
 {
     private readonly ADConfiguration _config;
     private readonly ILogger<ADRepository> _logger;
-    // Simple in-memory cache for search results to reduce repeated AD queries
+
+    // ✨ NEW: Connection pooling
+    private readonly SemaphoreSlim _connectionLock;
+    private readonly ConcurrentBag<DirectoryEntry> _connectionPool;
+    private bool _disposed;
+
+    // Cache for search results
     private static readonly ConcurrentDictionary<string, (DateTime Expire, List<ADUser> Users)> _searchCache = new();
+
+    // ✨ NEW: Constants for optimization
+    private const int BATCH_SIZE = 100;
+    private const int MAX_POOL_SIZE = 10;
 
     public ADRepository(ADConfiguration config, ILogger<ADRepository> logger)
     {
         _config = config;
         _logger = logger;
+        _connectionLock = new SemaphoreSlim(config.MaxConcurrentOperations, config.MaxConcurrentOperations);
+        _connectionPool = new ConcurrentBag<DirectoryEntry>();
+
+        _logger.LogInformation(
+            "ADRepository initialized - PoolSize: {PoolSize}, MaxConcurrent: {MaxConcurrent}",
+            config.ConnectionPoolSize,
+            config.MaxConcurrentOperations);
     }
 
-    #region Connection
+    #region Connection Management
+
+    /// <summary>
+    /// ✨ OPTIMIZED: Get pooled DirectoryEntry
+    /// </summary>
+    private DirectoryEntry GetDirectoryEntry(string? path = null)
+    {
+        // Try get from pool first
+        if (_connectionPool.TryTake(out var entry))
+        {
+            try
+            {
+                // Validate connection
+                _ = entry.NativeObject;
+                _logger.LogDebug("Reusing pooled connection");
+                return entry;
+            }
+            catch
+            {
+                entry?.Dispose();
+            }
+        }
+
+        // Create new connection
+        var authType = AuthenticationTypes.Secure;
+        if (_config.UseSSL)
+            authType |= AuthenticationTypes.SecureSocketsLayer;
+
+        var ldapPath = path ?? _config.LdapPath;
+
+        var newEntry = new DirectoryEntry(
+            ldapPath,
+            _config.Username,
+            _config.Password,
+            authType);
+
+        _logger.LogDebug("Created new connection");
+        return newEntry;
+    }
+
+    /// <summary>
+    /// ✨ NEW: Return connection to pool
+    /// </summary>
+    private void ReturnToPool(DirectoryEntry entry)
+    {
+        if (_connectionPool.Count < MAX_POOL_SIZE)
+        {
+            try
+            {
+                // Validate before returning to pool
+                _ = entry.NativeObject;
+                _connectionPool.Add(entry);
+                _logger.LogDebug("Returned connection to pool");
+            }
+            catch
+            {
+                entry?.Dispose();
+            }
+        }
+        else
+        {
+            entry?.Dispose();
+        }
+    }
 
     public async Task<Result> TestConnectionAsync(CancellationToken cancellationToken = default)
     {
-        // Fast path: do a quick network-level check (DNS resolution + TCP connect) to fail fast
         try
         {
             var targetHost = string.IsNullOrWhiteSpace(_config.LdapServer) ? _config.Domain : _config.LdapServer;
             var port = _config.Port <= 0 ? 389 : _config.Port;
 
-            _logger.LogInformation("Running quick network test to {Host}:{Port}", targetHost, port);
+            _logger.LogInformation("Testing connection to {Host}:{Port}", targetHost, port);
 
+            // Quick TCP test
             var quickOk = await TryTcpConnectAsync(targetHost, port, TimeSpan.FromSeconds(Math.Max(3, _config.TimeoutSeconds)));
             if (!quickOk)
             {
-                _logger.LogWarning("Quick network test failed for {Host}:{Port}", targetHost, port);
+                _logger.LogWarning("TCP connection failed to {Host}:{Port}", targetHost, port);
                 return Result.Failure($"Network connection to {targetHost}:{port} failed. Check DNS/network/firewall.");
             }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Quick connection test threw an exception");
-            return Result.Failure($"Quick connection test failed: {ex.Message}");
-        }
 
-        // If network quick test passed, attempt an AD bind using PrincipalContext (may still require credentials)
-        return await Task.Run(() =>
-        {
-            try
-            {
-                using var context = GetPrincipalContext();
-                // Minimal AD operation to verify bind and basic query
-                using var searcher = new PrincipalSearcher(new UserPrincipal(context));
-                _ = searcher.FindAll().Take(1).ToList();
-
-                _logger.LogInformation("Successfully connected to Active Directory: {Domain}", _config.Domain);
-                return Result.Success("Connection successful");
-            }
-            catch (PrincipalServerDownException ex)
-            {
-                _logger.LogError(ex, "Failed to connect to Active Directory - server down");
-                return Result.Failure("Could not contact the LDAP server. Check server address, port and network connectivity.");
-            }
-            catch (LdapException ex)
-            {
-                _logger.LogError(ex, "LDAP error during connection test");
-                return Result.Failure($"LDAP error: {ex.Message}");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to connect to Active Directory");
-                return Result.Failure($"Connection failed: {ex.Message}");
-            }
-        }, cancellationToken);
-    }
-
-    // Try a TCP connect to host:port with timeout. Returns true if connected.
-    private static async Task<bool> TryTcpConnectAsync(string host, int port, TimeSpan timeout)
-    {
-        try
-        {
-            // Resolve host to avoid blocking on connect to wrong name
-            IPAddress[] addrs = null;
-            try
-            {
-                addrs = await Dns.GetHostAddressesAsync(host);
-            }
-            catch
-            {
-                // if DNS resolution fails, attempt to use host as-is in connect
-            }
-
-            var addresses = (addrs != null && addrs.Length > 0) ? addrs : new IPAddress[] { IPAddress.None };
-
-            foreach (var addr in addresses)
+            // Try LDAP bind
+            return await Task.Run(() =>
             {
                 try
                 {
-                    using var client = new TcpClient();
-                    var connectTask = (addr == IPAddress.None)
-                        ? client.ConnectAsync(host, port)
-                        : client.ConnectAsync(addr, port);
+                    using var context = GetPrincipalContext();
+                    using var searcher = new PrincipalSearcher(new UserPrincipal(context));
+                    using var result = searcher.FindOne();
 
-                    var cts = new CancellationTokenSource(timeout);
-                    var completed = await Task.WhenAny(connectTask, Task.Delay(Timeout.Infinite, cts.Token));
-                    if (completed == connectTask && client.Connected)
-                    {
-                        client.Close();
-                        return true;
-                    }
+                    _logger.LogInformation("AD connection successful");
+                    return Result.Success("Connection successful");
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // try next address
+                    _logger.LogError(ex, "AD bind failed");
+                    return Result.Failure($"AD bind failed: {ex.Message}");
                 }
-            }
+            }, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Connection test failed");
+            return Result.Failure($"Connection test failed: {ex.Message}");
+        }
+    }
 
-            return false;
+    private async Task<bool> TryTcpConnectAsync(string host, int port, TimeSpan timeout)
+    {
+        using var client = new TcpClient();
+        try
+        {
+            var connectTask = client.ConnectAsync(host, port);
+            var timeoutTask = Task.Delay(timeout);
+            var completedTask = await Task.WhenAny(connectTask, timeoutTask);
+            return completedTask == connectTask && client.Connected;
         }
         catch
         {
@@ -137,269 +174,403 @@ public class ADRepository : IADRepository
         }
     }
 
+    private PrincipalContext GetPrincipalContext()
+    {
+        if (!string.IsNullOrWhiteSpace(_config.Username) && !string.IsNullOrWhiteSpace(_config.Password))
+        {
+            return new PrincipalContext(
+                ContextType.Domain,
+                _config.Domain,
+                _config.Username,
+                _config.Password);
+        }
+
+        return new PrincipalContext(ContextType.Domain, _config.Domain);
+    }
+
     #endregion
 
-    #region User Operations
+    #region User Operations - Optimized
 
     public async Task<Result<IEnumerable<ADUser>>> GetAllUsersAsync(CancellationToken cancellationToken = default)
     {
-        return await Task.Run(() =>
+        await _connectionLock.WaitAsync(cancellationToken);
+        DirectoryEntry? entry = null;
+        SearchResultCollection? results = null;
+
+        try
         {
-            try
+            _logger.LogInformation("Retrieving all users (optimized)");
+
+            entry = GetDirectoryEntry();
+            using var searcher = new DirectorySearcher(entry)
             {
-                _logger.LogInformation("Retrieving all users from Active Directory");
+                Filter = "(&(objectClass=user)(objectCategory=person))",
+                PageSize = _config.PageSize
+            };
 
-                using var context = GetPrincipalContext();
-                using var searcher = new PrincipalSearcher(new UserPrincipal(context));
+            LoadUserProperties(searcher);
 
-                var users = new List<ADUser>();
-                var results = searcher.FindAll();
+            var users = new List<ADUser>();
+            results = searcher.FindAll();
 
-                foreach (UserPrincipal user in results)
+            foreach (SearchResult result in results)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
                 {
-                    if (user != null)
-                    {
-                        try
-                        {
-                            users.Add(MapUserPrincipalToADUser(user));
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(ex, "Failed to map user: {Username}", user.SamAccountName);
-                        }
-                        finally
-                        {
-                            user.Dispose();
-                        }
-                    }
+                    users.Add(MapSearchResultToADUser(result));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to map user from search result");
+                }
+                finally
+                {
+                    result?.Dispose(); // ✨ CRITICAL: Dispose each result
+                }
+            }
+
+            _logger.LogInformation("Retrieved {Count} users", users.Count);
+            return Result.Success<IEnumerable<ADUser>>(users, $"Retrieved {users.Count} users");
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Get all users cancelled");
+            return Result.Failure<IEnumerable<ADUser>>("Operation cancelled");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving all users");
+            return Result.Failure<IEnumerable<ADUser>>($"Failed to retrieve users: {ex.Message}");
+        }
+        finally
+        {
+            results?.Dispose();
+            if (entry != null)
+                ReturnToPool(entry);
+            _connectionLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// ✨ NEW: Stream users asynchronously to avoid loading all in memory
+    /// </summary>
+    public async IAsyncEnumerable<ADUser> StreamUsersAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await _connectionLock.WaitAsync(cancellationToken);
+        DirectoryEntry? entry = null;
+        SearchResultCollection? results = null;
+
+        try
+        {
+            _logger.LogInformation("Streaming users (optimized for memory)");
+
+            entry = GetDirectoryEntry();
+            using var searcher = new DirectorySearcher(entry)
+            {
+                Filter = "(&(objectClass=user)(objectCategory=person))",
+                PageSize = _config.PageSize // ✨ CRITICAL: Paging enables streaming
+            };
+
+            LoadUserProperties(searcher);
+            results = searcher.FindAll();
+
+            _logger.LogDebug("Starting to stream users with page size: {PageSize}", _config.PageSize);
+
+            foreach (SearchResult result in results)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                ADUser? user = null;
+                try
+                {
+                    user = MapSearchResultToADUser(result);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to map user, skipping");
+                }
+                finally
+                {
+                    result?.Dispose(); // ✨ CRITICAL: Dispose immediately
                 }
 
-                _logger.LogInformation("Retrieved {Count} users", users.Count);
-                return Result.Success<IEnumerable<ADUser>>(users, $"Retrieved {users.Count} users");
+                if (user != null)
+                {
+                    yield return user;
+                }
             }
-            catch (Exception ex)
+        }
+        finally
+        {
+            results?.Dispose();
+            if (entry != null)
+                ReturnToPool(entry);
+            _connectionLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// ✨ NEW: Stream users from specific OU
+    /// </summary>
+    public async IAsyncEnumerable<ADUser> StreamUsersByOUAsync(
+        string ouPath,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await _connectionLock.WaitAsync(cancellationToken);
+        DirectoryEntry? entry = null;
+        SearchResultCollection? results = null;
+
+        try
+        {
+            _logger.LogInformation("Streaming users from OU: {OUPath}", ouPath);
+
+            entry = GetDirectoryEntry($"{_config.LdapPath}/{ouPath}");
+            using var searcher = new DirectorySearcher(entry)
             {
-                _logger.LogError(ex, "Error retrieving all users");
-                return Result.Failure<IEnumerable<ADUser>>($"Failed to retrieve users: {ex.Message}");
+                Filter = "(&(objectClass=user)(objectCategory=person))",
+                PageSize = _config.PageSize
+            };
+
+            LoadUserProperties(searcher);
+            results = searcher.FindAll();
+
+            foreach (SearchResult result in results)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                ADUser? user = null;
+                try
+                {
+                    user = MapSearchResultToADUser(result);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to map user from OU");
+                }
+                finally
+                {
+                    result?.Dispose();
+                }
+
+                if (user != null)
+                {
+                    yield return user;
+                }
             }
-        }, cancellationToken);
+        }
+        finally
+        {
+            results?.Dispose();
+            if (entry != null)
+                ReturnToPool(entry);
+            _connectionLock.Release();
+        }
     }
 
     public async Task<Result<IEnumerable<ADUser>>> GetUsersByOUAsync(string ouPath, CancellationToken cancellationToken = default)
     {
-        return await Task.Run(() =>
+        // Use streaming internally
+        var users = new List<ADUser>();
+        await foreach (var user in StreamUsersByOUAsync(ouPath, cancellationToken))
         {
-            try
-            {
-                _logger.LogInformation("Retrieving users from OU: {OUPath}", ouPath);
-
-                using var entry = new DirectoryEntry($"{_config.LdapPath}/{ouPath}");
-                using var searcher = new DirectorySearcher(entry)
-                {
-                    Filter = "(&(objectClass=user)(objectCategory=person))",
-                    PageSize = _config.PageSize
-                };
-
-                LoadUserProperties(searcher);
-
-                var users = new List<ADUser>();
-                var results = searcher.FindAll();
-
-                foreach (SearchResult result in results)
-                {
-                    try
-                    {
-                        users.Add(MapSearchResultToADUser(result));
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to map user from search result");
-                    }
-                }
-
-                _logger.LogInformation("Retrieved {Count} users from OU", users.Count);
-                return Result.Success<IEnumerable<ADUser>>(users, $"Retrieved {users.Count} users from OU");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error retrieving users from OU: {OUPath}", ouPath);
-                return Result.Failure<IEnumerable<ADUser>>($"Failed to retrieve users from OU: {ex.Message}");
-            }
-        }, cancellationToken);
+            users.Add(user);
+        }
+        return Result.Success<IEnumerable<ADUser>>(users, $"Retrieved {users.Count} users from OU");
     }
 
     public async Task<Result<ADUser>> GetUserByUsernameAsync(string username, CancellationToken cancellationToken = default)
     {
-        return await Task.Run(() =>
+        await _connectionLock.WaitAsync(cancellationToken);
+        DirectoryEntry? entry = null;
+        SearchResultCollection? results = null;
+
+        try
         {
-            try
-            {
-                _logger.LogInformation("Retrieving user: {Username}", username);
+            _logger.LogInformation("Retrieving user by username: {Username}", username);
 
-                using var context = GetPrincipalContext();
-                using var user = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
-
-                if (user == null)
-                {
-                    _logger.LogWarning("User not found: {Username}", username);
-                    throw new UserNotFoundException(username);
-                }
-
-                var adUser = MapUserPrincipalToADUser(user);
-                return Result.Success(adUser, "User retrieved successfully");
-            }
-            catch (UserNotFoundException ex)
+            entry = GetDirectoryEntry();
+            using var searcher = new DirectorySearcher(entry)
             {
-                return Result.Failure<ADUser>(ex.Message);
-            }
-            catch (Exception ex)
+                Filter = $"(&(objectClass=user)(objectCategory=person)(sAMAccountName={EscapeLdapFilter(username)}))",
+                SearchScope = System.DirectoryServices.SearchScope.Subtree
+            };
+
+            LoadUserProperties(searcher);
+            results = searcher.FindAll();
+
+            if (results.Count == 0)
             {
-                _logger.LogError(ex, "Error retrieving user: {Username}", username);
-                return Result.Failure<ADUser>($"Failed to retrieve user: {ex.Message}");
+                return Result.Failure<ADUser>($"User '{username}' not found");
             }
-        }, cancellationToken);
+
+            var user = MapSearchResultToADUser(results[0]);
+            results[0]?.Dispose();
+
+            _logger.LogInformation("Successfully retrieved user: {Username}", username);
+            return Result.Success(user);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving user by username: {Username}", username);
+            return Result.Failure<ADUser>($"Failed to retrieve user: {ex.Message}");
+        }
+        finally
+        {
+            results?.Dispose();
+            if (entry != null)
+                ReturnToPool(entry);
+            _connectionLock.Release();
+        }
     }
 
     public async Task<Result<ADUser>> GetUserByEmailAsync(string email, CancellationToken cancellationToken = default)
     {
-        return await Task.Run(() =>
+        await _connectionLock.WaitAsync(cancellationToken);
+        DirectoryEntry? entry = null;
+        SearchResultCollection? results = null;
+
+        try
         {
-            try
+            _logger.LogInformation("Retrieving user by email: {Email}", email);
+
+            entry = GetDirectoryEntry();
+            using var searcher = new DirectorySearcher(entry)
             {
-                _logger.LogInformation("Retrieving user by email: {Email}", email);
+                Filter = $"(&(objectClass=user)(objectCategory=person)(mail={EscapeLdapFilter(email)}))",
+                SearchScope = System.DirectoryServices.SearchScope.Subtree
+            };
 
-                using var context = GetPrincipalContext();
-                using var searchUser = new UserPrincipal(context) { EmailAddress = email };
-                using var searcher = new PrincipalSearcher(searchUser);
+            LoadUserProperties(searcher);
+            results = searcher.FindAll();
 
-                var result = searcher.FindOne() as UserPrincipal;
-
-                if (result == null)
-                {
-                    _logger.LogWarning("User not found with email: {Email}", email);
-                    return Result.Failure<ADUser>($"User with email '{email}' not found");
-                }
-
-                var adUser = MapUserPrincipalToADUser(result);
-                result.Dispose();
-
-                return Result.Success(adUser, "User retrieved successfully");
-            }
-            catch (Exception ex)
+            if (results.Count == 0)
             {
-                _logger.LogError(ex, "Error retrieving user by email: {Email}", email);
-                return Result.Failure<ADUser>($"Failed to retrieve user: {ex.Message}");
+                return Result.Failure<ADUser>($"User with email '{email}' not found");
             }
-        }, cancellationToken);
+
+            var user = MapSearchResultToADUser(results[0]);
+            results[0]?.Dispose();
+
+            return Result.Success(user);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving user by email: {Email}", email);
+            return Result.Failure<ADUser>($"Failed to retrieve user: {ex.Message}");
+        }
+        finally
+        {
+            results?.Dispose();
+            if (entry != null)
+                ReturnToPool(entry);
+            _connectionLock.Release();
+        }
     }
 
-    public async Task<Result<IEnumerable<ADUser>>> SearchUsersAsync(string searchTerm, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// ✨ OPTIMIZED: Search with caching
+    /// </summary>
+    public async Task<Result<IEnumerable<ADUser>>> SearchUsersAsync(
+        string searchTerm,
+        CancellationToken cancellationToken = default)
     {
-        return await Task.Run(() =>
+        // Check cache first
+        if (!string.IsNullOrWhiteSpace(searchTerm) && _config.SearchCacheSeconds > 0)
         {
-            try
+            var cacheKey = $"search:{searchTerm.ToLowerInvariant()}";
+            if (_searchCache.TryGetValue(cacheKey, out var cached))
             {
-                _logger.LogInformation("Searching users with term: {SearchTerm}", searchTerm);
-
-                // Return cached result when available
-                if (!string.IsNullOrWhiteSpace(searchTerm) && _config.SearchCacheSeconds > 0)
+                if (DateTime.UtcNow < cached.Expire)
                 {
-                    var cacheKey = $"search:{_config.DefaultSearchOU}:{_config.PageSize}:{searchTerm}".ToLowerInvariant();
-                    if (_searchCache.TryGetValue(cacheKey, out var entryCached))
-                    {
-                        if (DateTime.UtcNow < entryCached.Expire)
-                        {
-                            _logger.LogInformation("Returning cached search results for term '{SearchTerm}'", searchTerm);
-                            return Result.Success<IEnumerable<ADUser>>(entryCached.Users, $"Found {entryCached.Users.Count} users (cached)");
-                        }
-                        else
-                        {
-                            _searchCache.TryRemove(cacheKey, out _);
-                        }
-                    }
+                    _logger.LogDebug("Returning cached search results for: {SearchTerm}", searchTerm);
+                    return Result.Success<IEnumerable<ADUser>>(cached.Users, $"Found {cached.Users.Count} users (cached)");
                 }
-
-                // Create DirectoryEntry with credentials if provided to avoid anonymous/incorrect binds
-                    AuthenticationTypes authType = AuthenticationTypes.None;
-                    if (_config.UseSSL)
-                    {
-                        authType |= AuthenticationTypes.SecureSocketsLayer;
-                    }
-                    authType |= AuthenticationTypes.Secure;
-
-                    // Build DirectoryEntry with credentials if provided
-                    // Prepare username for DirectoryEntry: prefer DOMAIN\username if not already specified
-                    string ldapUsername = _config.Username ?? string.Empty;
-                    if (!string.IsNullOrWhiteSpace(ldapUsername) && !ldapUsername.Contains("\\") && !ldapUsername.Contains("@") && !string.IsNullOrWhiteSpace(_config.Domain))
-                    {
-                        ldapUsername = $"{_config.Domain}\\{ldapUsername}";
-                    }
-
-                    // If DefaultSearchOU provided, scope the entry to that OU to reduce search domain
-                    string ldapPath = string.IsNullOrWhiteSpace(_config.DefaultSearchOU)
-                        ? _config.LdapPath
-                        : $"{_config.LdapPath}/{_config.DefaultSearchOU}";
-
-                    var entry = !string.IsNullOrWhiteSpace(ldapUsername) && !string.IsNullOrWhiteSpace(_config.Password)
-                        ? new DirectoryEntry(ldapPath, ldapUsername, _config.Password, authType)
-                        : new DirectoryEntry(ldapPath);
-
-                    var users = new List<ADUser>();
-
-                    // Use explicit using blocks to avoid compiler issues with declarations in embedded statements
-                    using (entry)
-                    {
-                        using (var searcher = new DirectorySearcher(entry))
-                        {
-                            // Escape search term to prevent LDAP filter injection and malformed queries
-                            var escaped = EscapeLdapFilter(searchTerm);
-                            searcher.Filter = $"(&(objectClass=user)(objectCategory=person)(|(sAMAccountName=*{escaped}*)(displayName=*{escaped}*)(mail=*{escaped}*)(department=*{escaped}*)))";
-
-                            // Limit size/page to reasonable amount and set server time limit
-                            searcher.PageSize = _config.PageSize;
-                            searcher.ServerTimeLimit = TimeSpan.FromSeconds(_config.TimeoutSeconds);
-                            searcher.SizeLimit = _config.PageSize; // cap results returned
-
-                            // Only load minimal properties needed for list view to speed up queries
-                            searcher.PropertiesToLoad.Clear();
-                            searcher.PropertiesToLoad.AddRange(new[] { "sAMAccountName", "displayName", "mail", "department" });
-
-                            var results = searcher.FindAll();
-
-                            foreach (SearchResult result in results)
-                            {
-                                try
-                                {
-                                    users.Add(MapSearchResultToADUser(result));
-                                }
-                                catch (Exception ex)
-                                {
-                                    _logger.LogWarning(ex, "Failed to map user from search result");
-                                }
-                            }
-                        }
-
-                    // Cache results briefly to speed up repeated queries
-                    if (!string.IsNullOrWhiteSpace(searchTerm) && _config.SearchCacheSeconds > 0)
-                    {
-                        var cacheKey = $"search:{_config.DefaultSearchOU}:{_config.PageSize}:{searchTerm}".ToLowerInvariant();
-                        var expire = DateTime.UtcNow.AddSeconds(_config.SearchCacheSeconds);
-                        _searchCache[cacheKey] = (expire, users);
-                    }
-                    }
-
-                _logger.LogInformation("Found {Count} users matching search term", users.Count);
-                return Result.Success<IEnumerable<ADUser>>(users, $"Found {users.Count} users");
+                else
+                {
+                    _searchCache.TryRemove(cacheKey, out _);
+                }
             }
-            catch (Exception ex)
+        }
+
+        await _connectionLock.WaitAsync(cancellationToken);
+        DirectoryEntry? entry = null;
+        SearchResultCollection? results = null;
+
+        try
+        {
+            _logger.LogInformation("Searching users: {SearchTerm}", searchTerm);
+
+            entry = GetDirectoryEntry();
+
+            // Build fuzzy search filter
+            var filter = $"(&(objectClass=user)(objectCategory=person)(|(cn=*{EscapeLdapFilter(searchTerm)}*)(sAMAccountName=*{EscapeLdapFilter(searchTerm)}*)(displayName=*{EscapeLdapFilter(searchTerm)}*)(mail=*{EscapeLdapFilter(searchTerm)}*)))";
+
+            using var searcher = new DirectorySearcher(entry)
             {
-                _logger.LogError(ex, "Error searching users: {SearchTerm}", searchTerm);
-                return Result.Failure<IEnumerable<ADUser>>($"Search failed: {ex.Message}");
+                Filter = filter,
+                PageSize = _config.PageSize
+            };
+
+            LoadUserProperties(searcher);
+            results = searcher.FindAll();
+
+            var users = new List<ADUser>();
+            foreach (SearchResult result in results)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    users.Add(MapSearchResultToADUser(result));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to map user from search result");
+                }
+                finally
+                {
+                    result?.Dispose();
+                }
             }
-        }, cancellationToken);
+
+            // Cache results
+            if (!string.IsNullOrWhiteSpace(searchTerm) && _config.SearchCacheSeconds > 0)
+            {
+                var cacheKey = $"search:{searchTerm.ToLowerInvariant()}";
+                var expiry = DateTime.UtcNow.AddSeconds(_config.SearchCacheSeconds);
+                _searchCache[cacheKey] = (expiry, users);
+            }
+
+            _logger.LogInformation("Found {Count} users matching search term", users.Count);
+            return Result.Success<IEnumerable<ADUser>>(users, $"Found {users.Count} users");
+        }
+        catch (OperationCanceledException)
+        {
+            return Result.Failure<IEnumerable<ADUser>>("Search cancelled");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error searching users: {SearchTerm}", searchTerm);
+            return Result.Failure<IEnumerable<ADUser>>($"Search failed: {ex.Message}");
+        }
+        finally
+        {
+            results?.Dispose();
+            if (entry != null)
+                ReturnToPool(entry);
+            _connectionLock.Release();
+        }
     }
 
-    public async Task<Result> ChangePasswordAsync(string username, string newPassword, bool mustChangeAtNextLogon, CancellationToken cancellationToken = default)
+    public async Task<Result> ChangePasswordAsync(
+        string username,
+        string newPassword,
+        bool mustChangeAtNextLogon,
+        CancellationToken cancellationToken = default)
     {
         return await Task.Run(() =>
         {
@@ -418,7 +589,6 @@ public class ADRepository : IADRepository
                 user.SetPassword(newPassword);
                 if (mustChangeAtNextLogon)
                 {
-                    // Force change at next logon
                     user.ExpirePasswordNow();
                 }
                 user.Save();
@@ -438,168 +608,10 @@ public class ADRepository : IADRepository
         }, cancellationToken);
     }
 
-    public async Task<Result<ADUser>> CreateUserAsync(
+    public async Task<Result> SetUserStatusAsync(
         string username,
-        string firstName,
-        string lastName,
-        string password,
-        string? organizationalUnit,
-        string? displayName,
-        string? email,
-        string? department,
-        string? title,
-        string? company,
-        string? office,
-        string? phoneNumber,
-        string? description,
-        bool mustChangePasswordOnNextLogon,
-        bool accountEnabled,
-        bool passwordNeverExpires,
-        IEnumerable<string>? initialGroups,
+        bool enabled,
         CancellationToken cancellationToken = default)
-    {
-        return await Task.Run(() =>
-        {
-            try
-            {
-                _logger.LogInformation("Creating new user: {Username}", username);
-
-                using var context = GetPrincipalContext();
-                
-                // Check if user already exists
-                using var existingUser = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
-                if (existingUser != null)
-                {
-                    return Result.Failure<ADUser>($"User '{username}' already exists");
-                }
-
-                // Determine container/OU
-                PrincipalContext? containerContext = null;
-                if (!string.IsNullOrWhiteSpace(organizationalUnit))
-                {
-                    var containerPath = organizationalUnit.StartsWith(_config.LdapPath, StringComparison.OrdinalIgnoreCase)
-                        ? organizationalUnit
-                        : $"{_config.LdapPath}/{organizationalUnit}";
-                    try
-                    {
-                        ContextOptions options = ContextOptions.Negotiate;
-                        if (_config.UseSSL)
-                        {
-                            options |= ContextOptions.SecureSocketLayer;
-                        }
-                        containerContext = new PrincipalContext(
-                            ContextType.Domain,
-                            string.IsNullOrWhiteSpace(_config.LdapServer) ? _config.Domain : _config.LdapServer,
-                            containerPath,
-                            options,
-                            !string.IsNullOrWhiteSpace(_config.Username) && !string.IsNullOrWhiteSpace(_config.Password) ? _config.Username : null,
-                            !string.IsNullOrWhiteSpace(_config.Username) && !string.IsNullOrWhiteSpace(_config.Password) ? _config.Password : null);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to create context for OU {OU}, falling back to default", organizationalUnit);
-                        containerContext = null;
-                    }
-                }
-
-                using var targetContext = containerContext ?? context;
-                
-                // Create new user
-                using var newUser = new UserPrincipal(targetContext, username, password, accountEnabled)
-                {
-                    GivenName = firstName,
-                    Surname = lastName,
-                    DisplayName = !string.IsNullOrWhiteSpace(displayName) ? displayName : $"{firstName} {lastName}".Trim(),
-                    Name = !string.IsNullOrWhiteSpace(displayName) ? displayName : $"{firstName} {lastName}".Trim()
-                };
-                
-                if (!string.IsNullOrWhiteSpace(email))
-                    newUser.EmailAddress = email;
-                if (!string.IsNullOrWhiteSpace(description))
-                    newUser.Description = description;
-                
-                // Set password options
-                if (mustChangePasswordOnNextLogon)
-                {
-                    newUser.ExpirePasswordNow();
-                }
-                
-                if (passwordNeverExpires)
-                {
-                    newUser.PasswordNeverExpires = true;
-                }
-                
-                newUser.Save();
-
-                // Set additional properties via DirectoryEntry for better control
-                try
-                {
-                    using var entry = newUser.GetUnderlyingObject() as DirectoryEntry;
-                    if (entry != null)
-                    {
-                        if (!string.IsNullOrWhiteSpace(department))
-                            entry.Properties["department"].Value = department;
-                        if (!string.IsNullOrWhiteSpace(title))
-                            entry.Properties["title"].Value = title;
-                        if (!string.IsNullOrWhiteSpace(company))
-                            entry.Properties["company"].Value = company;
-                        if (!string.IsNullOrWhiteSpace(office))
-                            entry.Properties["physicalDeliveryOfficeName"].Value = office;
-                        if (!string.IsNullOrWhiteSpace(phoneNumber))
-                            entry.Properties["telephoneNumber"].Value = phoneNumber;
-                        
-                        entry.CommitChanges();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to set additional properties for user {Username}", username);
-                    // Continue - user was created, just some optional properties failed
-                }
-
-                // Add user to initial groups
-                if (initialGroups != null && initialGroups.Any())
-                {
-                    foreach (var groupName in initialGroups)
-                    {
-                        try
-                        {
-                            using var group = GroupPrincipal.FindByIdentity(context, IdentityType.Name, groupName);
-                            if (group != null && !group.Members.Contains(newUser))
-                            {
-                                group.Members.Add(newUser);
-                                group.Save();
-                                _logger.LogInformation("Added user {Username} to group {GroupName}", username, groupName);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(ex, "Failed to add user {Username} to group {GroupName}", username, groupName);
-                            // Continue - don't fail user creation if group add fails
-                        }
-                    }
-                }
-
-                // Retrieve created user to map to ADUser
-                using var createdUser = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
-                if (createdUser == null)
-                {
-                    return Result.Failure<ADUser>("User was created but could not be retrieved");
-                }
-
-                var adUser = MapUserPrincipalToADUser(createdUser);
-                _logger.LogInformation("User {Username} created successfully", username);
-                return Result.Success(adUser, "User created successfully");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error creating user: {Username}", username);
-                return Result.Failure<ADUser>($"Failed to create user: {ex.Message}");
-            }
-        }, cancellationToken);
-    }
-
-    public async Task<Result> SetUserStatusAsync(string username, bool enabled, CancellationToken cancellationToken = default)
     {
         return await Task.Run(() =>
         {
@@ -669,29 +681,359 @@ public class ADRepository : IADRepository
         }, cancellationToken);
     }
 
+    public async Task<Result<ADUser>> CreateUserAsync(
+        string username,
+        string firstName,
+        string lastName,
+        string password,
+        string? organizationalUnit,
+        string? displayName,
+        string? email,
+        string? department,
+        string? title,
+        string? company,
+        string? office,
+        string? phoneNumber,
+        string? description,
+        bool mustChangePasswordOnNextLogon,
+        bool accountEnabled,
+        bool passwordNeverExpires,
+        IEnumerable<string>? initialGroups,
+        CancellationToken cancellationToken = default)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                _logger.LogInformation("Creating new user: {Username}", username);
+
+                using var context = GetPrincipalContext();
+
+                // Check if user already exists
+                using var existingUser = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
+                if (existingUser != null)
+                {
+                    return Result.Failure<ADUser>($"User '{username}' already exists");
+                }
+
+                // Create user
+                using var newUser = new UserPrincipal(context)
+                {
+                    SamAccountName = username,
+                    GivenName = firstName,
+                    Surname = lastName,
+                    DisplayName = displayName ?? $"{firstName} {lastName}",
+                    EmailAddress = email,
+                    Enabled = accountEnabled,
+                    PasswordNeverExpires = passwordNeverExpires
+                };
+
+                newUser.SetPassword(password);
+                if (mustChangePasswordOnNextLogon)
+                {
+                    newUser.ExpirePasswordNow();
+                }
+
+                newUser.Save();
+
+                // Set additional properties via DirectoryEntry
+                if (newUser.GetUnderlyingObject() is DirectoryEntry entry)
+                {
+                    try
+                    {
+                        if (!string.IsNullOrWhiteSpace(description))
+                            entry.Properties["description"].Value = description;
+                        if (!string.IsNullOrWhiteSpace(department))
+                            entry.Properties["department"].Value = department;
+                        if (!string.IsNullOrWhiteSpace(title))
+                            entry.Properties["title"].Value = title;
+                        if (!string.IsNullOrWhiteSpace(company))
+                            entry.Properties["company"].Value = company;
+                        if (!string.IsNullOrWhiteSpace(office))
+                            entry.Properties["physicalDeliveryOfficeName"].Value = office;
+                        if (!string.IsNullOrWhiteSpace(phoneNumber))
+                            entry.Properties["telephoneNumber"].Value = phoneNumber;
+
+                        entry.CommitChanges();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to set additional properties for user {Username}", username);
+                    }
+                }
+
+                // Add to initial groups
+                if (initialGroups != null && initialGroups.Any())
+                {
+                    foreach (var groupName in initialGroups)
+                    {
+                        try
+                        {
+                            using var group = GroupPrincipal.FindByIdentity(context, IdentityType.Name, groupName);
+                            if (group != null && !group.Members.Contains(newUser))
+                            {
+                                group.Members.Add(newUser);
+                                group.Save();
+                                _logger.LogInformation("Added user {Username} to group {GroupName}", username, groupName);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to add user {Username} to group {GroupName}", username, groupName);
+                        }
+                    }
+                }
+
+                // Retrieve created user
+                using var createdUser = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
+                if (createdUser == null)
+                {
+                    return Result.Failure<ADUser>("User was created but could not be retrieved");
+                }
+
+                var adUser = MapUserPrincipalToADUser(createdUser);
+                _logger.LogInformation("User {Username} created successfully", username);
+                return Result.Success(adUser, "User created successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating user: {Username}", username);
+                return Result.Failure<ADUser>($"Failed to create user: {ex.Message}");
+            }
+        }, cancellationToken);
+    }
+
+    public async Task<Result> UpdateUserAsync(ADUser user, CancellationToken cancellationToken = default)
+    {
+        return await Task.Run(() =>
+        {
+            DirectoryEntry? entry = null;
+            try
+            {
+                _logger.LogInformation("Updating user: {Username}", user.Username);
+
+                entry = GetDirectoryEntry(user.DistinguishedName);
+
+                // Update properties
+                SetPropertyIfNotNull(entry, "displayName", user.DisplayName);
+                SetPropertyIfNotNull(entry, "givenName", user.FirstName);
+                SetPropertyIfNotNull(entry, "sn", user.LastName);
+                SetPropertyIfNotNull(entry, "description", user.Description);
+                SetPropertyIfNotNull(entry, "department", user.Department);
+                SetPropertyIfNotNull(entry, "title", user.Title);
+                SetPropertyIfNotNull(entry, "company", user.Company);
+                SetPropertyIfNotNull(entry, "physicalDeliveryOfficeName", user.Office);
+                SetPropertyIfNotNull(entry, "telephoneNumber", user.PhoneNumber);
+                SetPropertyIfNotNull(entry, "mail", user.Email);
+
+                entry.CommitChanges();
+
+                _logger.LogInformation("Updated user {Username}", user.Username);
+                return Result.Success("User updated successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating user {Username}", user.Username);
+                return Result.Failure($"Error updating user: {ex.Message}");
+            }
+            finally
+            {
+                if (entry != null)
+                    ReturnToPool(entry);
+            }
+        }, cancellationToken);
+    }
+
+    private void SetPropertyIfNotNull(DirectoryEntry entry, string propertyName, string? value)
+    {
+        if (value != null)
+        {
+            if (entry.Properties.Contains(propertyName))
+            {
+                entry.Properties[propertyName].Value = value;
+            }
+            else
+            {
+                entry.Properties[propertyName].Add(value);
+            }
+        }
+    }
+
     #endregion
 
     #region Group Operations
 
-/// <summary>
-/// Gets all groups from Active Directory
-/// </summary>
-public async Task<Result<IEnumerable<ADGroup>>> GetAllGroupsAsync(CancellationToken cancellationToken = default)
-{
-    return await Task.Run(() =>
+    /// <summary>
+    /// ✨ OPTIMIZED: Get group members with batch querying
+    /// </summary>
+    public async Task<Result<IEnumerable<ADUser>>> GetGroupMembersAsync(
+        string groupName,
+        CancellationToken cancellationToken = default)
     {
+        await _connectionLock.WaitAsync(cancellationToken);
+        DirectoryEntry? entry = null;
+        SearchResultCollection? groupResults = null;
+
+        try
+        {
+            _logger.LogInformation("Getting members of group: {GroupName} (optimized)", groupName);
+
+            // STEP 1: Get all member DNs in one query
+            entry = GetDirectoryEntry();
+            using var searcher = new DirectorySearcher(entry)
+            {
+                Filter = $"(&(objectCategory=group)(cn={EscapeLdapFilter(groupName)}))",
+                PropertiesToLoad = { "member" }
+            };
+
+            groupResults = searcher.FindAll();
+            if (groupResults.Count == 0)
+            {
+                return Result.Failure<IEnumerable<ADUser>>($"Group '{groupName}' not found");
+            }
+
+            var memberDns = new List<string>();
+            var groupResult = groupResults[0];
+
+            if (groupResult.Properties.Contains("member"))
+            {
+                foreach (var dn in groupResult.Properties["member"])
+                {
+                    if (dn is string memberDn)
+                    {
+                        memberDns.Add(memberDn);
+                    }
+                }
+            }
+
+            groupResult?.Dispose();
+
+            if (memberDns.Count == 0)
+            {
+                return Result.Success<IEnumerable<ADUser>>(new List<ADUser>());
+            }
+
+            _logger.LogDebug("Group {GroupName} has {Count} members, fetching in batches", groupName, memberDns.Count);
+
+            // STEP 2: Batch query all members
+            var users = await BatchQueryUsersAsync(memberDns, cancellationToken);
+
+            _logger.LogInformation("Retrieved {Count} members for group {GroupName}", users.Count, groupName);
+            return Result.Success<IEnumerable<ADUser>>(users);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting group members: {GroupName}", groupName);
+            return Result.Failure<IEnumerable<ADUser>>($"Error: {ex.Message}");
+        }
+        finally
+        {
+            groupResults?.Dispose();
+            if (entry != null)
+                ReturnToPool(entry);
+            _connectionLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// ✨ NEW: Batch query users by DNs
+    /// </summary>
+    private async Task<List<ADUser>> BatchQueryUsersAsync(
+        List<string> distinguishedNames,
+        CancellationToken cancellationToken)
+    {
+        var users = new ConcurrentBag<ADUser>();
+        var batches = distinguishedNames
+            .Select((dn, index) => new { dn, index })
+            .GroupBy(x => x.index / BATCH_SIZE)
+            .Select(g => g.Select(x => x.dn).ToList())
+            .ToList();
+
+        _logger.LogDebug("Processing {BatchCount} batches of {BatchSize}", batches.Count, BATCH_SIZE);
+
+        // Process batches in parallel
+        await Task.Run(() =>
+        {
+            Parallel.ForEach(
+                batches,
+                new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = _config.MaxParallelDegree,
+                    CancellationToken = cancellationToken
+                },
+                batch =>
+                {
+                    DirectoryEntry? batchEntry = null;
+                    SearchResultCollection? batchResults = null;
+
+                    try
+                    {
+                        batchEntry = GetDirectoryEntry();
+
+                        // Build OR filter for batch
+                        var filterParts = batch.Select(dn =>
+                            $"(distinguishedName={EscapeLdapFilter(dn)})");
+
+                        var batchFilter = $"(&(objectClass=user)(objectCategory=person)(|{string.Join("", filterParts)}))";
+
+                        using var batchSearcher = new DirectorySearcher(batchEntry)
+                        {
+                            Filter = batchFilter,
+                            PageSize = BATCH_SIZE
+                        };
+
+                        LoadUserProperties(batchSearcher);
+                        batchResults = batchSearcher.FindAll();
+
+                        foreach (SearchResult result in batchResults)
+                        {
+                            try
+                            {
+                                users.Add(MapSearchResultToADUser(result));
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "Failed to map user from batch");
+                            }
+                            finally
+                            {
+                                result?.Dispose();
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to process batch");
+                    }
+                    finally
+                    {
+                        batchResults?.Dispose();
+                        if (batchEntry != null)
+                            ReturnToPool(batchEntry);
+                    }
+                });
+        }, cancellationToken);
+
+        return users.ToList();
+    }
+
+    public async Task<Result<IEnumerable<ADGroup>>> GetAllGroupsAsync(CancellationToken cancellationToken = default)
+    {
+        await _connectionLock.WaitAsync(cancellationToken);
+        DirectoryEntry? entry = null;
+        SearchResultCollection? results = null;
+
         try
         {
             _logger.LogInformation("Getting all groups from Active Directory");
 
-            var _entry = GetDirectoryEntry();
-            using var searcher = new DirectorySearcher(_entry)
+            entry = GetDirectoryEntry();
+            using var searcher = new DirectorySearcher(entry)
             {
                 Filter = "(objectCategory=group)",
                 PageSize = _config.PageSize
             };
 
-            // Properties to load
             searcher.PropertiesToLoad.AddRange(new[]
             {
                 "cn", "name", "distinguishedName", "description",
@@ -699,13 +1041,26 @@ public async Task<Result<IEnumerable<ADGroup>>> GetAllGroupsAsync(CancellationTo
                 "whenCreated", "whenChanged", "sAMAccountName"
             });
 
-            var results = searcher.FindAll();
+            results = searcher.FindAll();
             var groups = new List<ADGroup>();
 
             foreach (SearchResult result in results)
             {
-                var group = MapSearchResultToADGroup(result);
-                groups.Add(group);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var group = MapSearchResultToADGroup(result);
+                    groups.Add(group);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to map group from search result");
+                }
+                finally
+                {
+                    result?.Dispose();
+                }
             }
 
             _logger.LogInformation("Retrieved {Count} groups", groups.Count);
@@ -716,30 +1071,38 @@ public async Task<Result<IEnumerable<ADGroup>>> GetAllGroupsAsync(CancellationTo
             _logger.LogError(ex, "Error getting all groups");
             return Result.Failure<IEnumerable<ADGroup>>($"Error getting groups: {ex.Message}");
         }
-    }, cancellationToken);
-}
+        finally
+        {
+            results?.Dispose();
+            if (entry != null)
+                ReturnToPool(entry);
+            _connectionLock.Release();
+        }
+    }
 
-/// <summary>
-/// Searches for groups matching the search term (fuzzy search)
-/// </summary>
-public async Task<Result<IEnumerable<ADGroup>>> SearchGroupsAsync(string searchTerm, CancellationToken cancellationToken = default)
-{
-    return await Task.Run(() =>
+    public async Task<Result<IEnumerable<ADGroup>>> SearchGroupsAsync(
+        string searchTerm,
+        CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(searchTerm))
+        {
+            return await GetAllGroupsAsync(cancellationToken);
+        }
+
+        await _connectionLock.WaitAsync(cancellationToken);
+        DirectoryEntry? entry = null;
+        SearchResultCollection? results = null;
+
         try
         {
-            if (string.IsNullOrWhiteSpace(searchTerm))
-            {
-                return GetAllGroupsAsync(cancellationToken).Result;
-            }
-
             _logger.LogInformation("Searching groups with term: {SearchTerm}", searchTerm);
 
-            // Fuzzy search: search in cn, name, description, displayName
-            var filter = $"(&(objectCategory=group)(|(cn=*{searchTerm}*)(name=*{searchTerm}*)(description=*{searchTerm}*)(displayName=*{searchTerm}*)))";
+            entry = GetDirectoryEntry();
 
-            var _entry = GetDirectoryEntry();
-            using var searcher = new DirectorySearcher(_entry)
+            // Fuzzy search in multiple fields
+            var filter = $"(&(objectCategory=group)(|(cn=*{EscapeLdapFilter(searchTerm)}*)(name=*{EscapeLdapFilter(searchTerm)}*)(description=*{EscapeLdapFilter(searchTerm)}*)(displayName=*{EscapeLdapFilter(searchTerm)}*)))";
+
+            using var searcher = new DirectorySearcher(entry)
             {
                 Filter = filter,
                 PageSize = _config.PageSize
@@ -752,793 +1115,671 @@ public async Task<Result<IEnumerable<ADGroup>>> SearchGroupsAsync(string searchT
                 "whenCreated", "whenChanged", "sAMAccountName"
             });
 
-            var results = searcher.FindAll();
+            results = searcher.FindAll();
             var groups = new List<ADGroup>();
 
             foreach (SearchResult result in results)
             {
-                var group = MapSearchResultToADGroup(result);
-                groups.Add(group);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    groups.Add(MapSearchResultToADGroup(result));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to map group");
+                }
+                finally
+                {
+                    result?.Dispose();
+                }
             }
 
-            _logger.LogInformation("Found {Count} groups matching '{SearchTerm}'", groups.Count, searchTerm);
-            return Result.Success<IEnumerable<ADGroup>>(groups);
+            _logger.LogInformation("Found {Count} groups matching search term", groups.Count);
+            return Result.Success<IEnumerable<ADGroup>>(groups, $"Found {groups.Count} groups");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error searching groups with term: {SearchTerm}", searchTerm);
-            return Result.Failure<IEnumerable<ADGroup>>($"Error searching groups: {ex.Message}");
+            _logger.LogError(ex, "Error searching groups: {SearchTerm}", searchTerm);
+            return Result.Failure<IEnumerable<ADGroup>>($"Search failed: {ex.Message}");
         }
-    }, cancellationToken);
-}
+        finally
+        {
+            results?.Dispose();
+            if (entry != null)
+                ReturnToPool(entry);
+            _connectionLock.Release();
+        }
+    }
 
-/// <summary>
-/// Gets a specific group by name
-/// </summary>
-public async Task<Result<ADGroup>> GetGroupByNameAsync(string groupName, CancellationToken cancellationToken = default)
-{
-    return await Task.Run(() =>
+    public async Task<Result<ADGroup>> GetGroupByNameAsync(
+        string groupName,
+        CancellationToken cancellationToken = default)
     {
+        await _connectionLock.WaitAsync(cancellationToken);
+        DirectoryEntry? entry = null;
+        SearchResultCollection? results = null;
+
         try
         {
             _logger.LogInformation("Getting group by name: {GroupName}", groupName);
 
-            using var context = GetPrincipalContext();
-            using var group = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
-
-            if (group == null)
+            entry = GetDirectoryEntry();
+            using var searcher = new DirectorySearcher(entry)
             {
-                _logger.LogWarning("Group not found: {GroupName}", groupName);
+                Filter = $"(&(objectCategory=group)(cn={EscapeLdapFilter(groupName)}))"
+            };
+
+            searcher.PropertiesToLoad.AddRange(new[]
+            {
+                "cn", "name", "distinguishedName", "description",
+                "groupType", "mail", "managedBy", "member", "memberOf",
+                "whenCreated", "whenChanged", "sAMAccountName"
+            });
+
+            results = searcher.FindAll();
+
+            if (results.Count == 0)
+            {
                 return Result.Failure<ADGroup>($"Group '{groupName}' not found");
             }
 
-            var adGroup = MapGroupPrincipalToADGroup(group);
+            var group = MapSearchResultToADGroup(results[0]);
+            results[0]?.Dispose();
 
             _logger.LogInformation("Successfully retrieved group: {GroupName}", groupName);
-            return Result.Success<ADGroup>(adGroup);
+            return Result.Success(group);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting group by name: {GroupName}", groupName);
             return Result.Failure<ADGroup>($"Error getting group: {ex.Message}");
         }
-    }, cancellationToken);
-}
+        finally
+        {
+            results?.Dispose();
+            if (entry != null)
+                ReturnToPool(entry);
+            _connectionLock.Release();
+        }
+    }
 
-/// <summary>
-/// Gets groups that a user is a member of
-/// </summary>
-public async Task<Result<IEnumerable<ADGroup>>> GetUserGroupsAsync(string username, CancellationToken cancellationToken = default)
-{
-    return await Task.Run(() =>
+    /// <summary>
+    /// ✨ OPTIMIZED: Get user groups with single query
+    /// </summary>
+    public async Task<Result<IEnumerable<ADGroup>>> GetUserGroupsAsync(
+        string username,
+        CancellationToken cancellationToken = default)
     {
+        await _connectionLock.WaitAsync(cancellationToken);
+        DirectoryEntry? entry = null;
+        SearchResultCollection? results = null;
+
         try
         {
-            _logger.LogInformation("Getting groups for user: {Username}", username);
+            _logger.LogInformation("Getting groups for user: {Username} (optimized)", username);
 
-            using var context = GetPrincipalContext();
-            using var user = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
-
-            if (user == null)
+            entry = GetDirectoryEntry();
+            using var searcher = new DirectorySearcher(entry)
             {
-                _logger.LogWarning("User not found: {Username}", username);
+                Filter = $"(&(objectClass=user)(sAMAccountName={EscapeLdapFilter(username)}))",
+                PropertiesToLoad = { "memberOf" }
+            };
+
+            results = searcher.FindAll();
+
+            if (results.Count == 0)
+            {
                 return Result.Failure<IEnumerable<ADGroup>>($"User '{username}' not found");
             }
 
-            var groups = user.GetGroups().ToList();
-            var adGroups = new List<ADGroup>();
+            var groupDns = new List<string>();
+            var userResult = results[0];
 
-            foreach (Principal group in groups)
+            if (userResult.Properties.Contains("memberOf"))
             {
-                if (group is GroupPrincipal groupPrincipal)
+                foreach (var dn in userResult.Properties["memberOf"])
                 {
-                    adGroups.Add(MapGroupPrincipalToADGroup(groupPrincipal));
+                    if (dn is string groupDn)
+                    {
+                        groupDns.Add(groupDn);
+                    }
                 }
             }
 
-            _logger.LogInformation("User {Username} is member of {Count} groups", username, adGroups.Count);
-            return Result.Success<IEnumerable<ADGroup>>(adGroups);
+            userResult?.Dispose();
+
+            if (groupDns.Count == 0)
+            {
+                return Result.Success<IEnumerable<ADGroup>>(new List<ADGroup>());
+            }
+
+            // Batch query groups
+            var groups = await BatchQueryGroupsAsync(groupDns, cancellationToken);
+
+            _logger.LogInformation("User {Username} is member of {Count} groups", username, groups.Count);
+            return Result.Success<IEnumerable<ADGroup>>(groups);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting groups for user: {Username}", username);
-            return Result.Failure<IEnumerable<ADGroup>>($"Error getting user groups: {ex.Message}");
+            _logger.LogError(ex, "Error getting user groups: {Username}", username);
+            return Result.Failure<IEnumerable<ADGroup>>($"Error: {ex.Message}");
         }
-    }, cancellationToken);
-}
-
-/// <summary>
-/// Adds a user to a group
-/// </summary>
-public async Task<Result> AddUserToGroupAsync(string username, string groupName, CancellationToken cancellationToken = default)
-{
-    return await Task.Run(() =>
-    {
-        try
+        finally
         {
-            _logger.LogInformation("Adding user {Username} to group {GroupName}", username, groupName);
-
-            using var context = GetPrincipalContext();
-
-            // Find user
-            using var user = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
-            if (user == null)
-            {
-                _logger.LogWarning("User not found: {Username}", username);
-                return Result.Failure($"User '{username}' not found");
-            }
-
-            // Find group
-            using var group = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
-            if (group == null)
-            {
-                _logger.LogWarning("Group not found: {GroupName}", groupName);
-                return Result.Failure($"Group '{groupName}' not found");
-            }
-
-            // Check if user is already a member
-            if (user.IsMemberOf(group))
-            {
-                _logger.LogInformation("User {Username} is already a member of group {GroupName}", username, groupName);
-                return Result.Success($"User '{username}' is already a member of group '{groupName}'");
-            }
-
-            // Add user to group
-            group.Members.Add(user);
-            group.Save();
-
-            _logger.LogInformation("Successfully added user {Username} to group {GroupName}", username, groupName);
-            return Result.Success($"User '{username}' added to group '{groupName}' successfully");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error adding user {Username} to group {GroupName}", username, groupName);
-            return Result.Failure($"Error adding user to group: {ex.Message}");
-        }
-    }, cancellationToken);
-}
-
-/// <summary>
-/// Removes a user from a group
-/// </summary>
-public async Task<Result> RemoveUserFromGroupAsync(string username, string groupName, CancellationToken cancellationToken = default)
-{
-    return await Task.Run(() =>
-    {
-        try
-        {
-            _logger.LogInformation("Removing user {Username} from group {GroupName}", username, groupName);
-
-            using var context = GetPrincipalContext();
-
-            // Find user
-            using var user = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
-            if (user == null)
-            {
-                _logger.LogWarning("User not found: {Username}", username);
-                return Result.Failure($"User '{username}' not found");
-            }
-
-            // Find group
-            using var group = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
-            if (group == null)
-            {
-                _logger.LogWarning("Group not found: {GroupName}", groupName);
-                return Result.Failure($"Group '{groupName}' not found");
-            }
-
-            // Check if user is a member
-            if (!user.IsMemberOf(group))
-            {
-                _logger.LogInformation("User {Username} is not a member of group {GroupName}", username, groupName);
-                return Result.Success($"User '{username}' is not a member of group '{groupName}'");
-            }
-
-            // Remove user from group
-            group.Members.Remove(user);
-            group.Save();
-
-            _logger.LogInformation("Successfully removed user {Username} from group {GroupName}", username, groupName);
-            return Result.Success($"User '{username}' removed from group '{groupName}' successfully");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error removing user {Username} from group {GroupName}", username, groupName);
-            return Result.Failure($"Error removing user from group: {ex.Message}");
-        }
-    }, cancellationToken);
-}
-
-/// <summary>
-/// Gets all members of a group
-/// </summary>
-public async Task<Result<IEnumerable<ADUser>>> GetGroupMembersAsync(string groupName, CancellationToken cancellationToken = default)
-{
-    return await Task.Run(() =>
-    {
-        try
-        {
-            _logger.LogInformation("Getting members of group: {GroupName}", groupName);
-
-            using var context = GetPrincipalContext();
-            using var group = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
-
-            if (group == null)
-            {
-                _logger.LogWarning("Group not found: {GroupName}", groupName);
-                return Result.Failure<IEnumerable<ADUser>>($"Group '{groupName}' not found");
-            }
-
-            var members = group.GetMembers().ToList();
-            var adUsers = new List<ADUser>();
-
-            foreach (Principal member in members)
-            {
-                if (member is UserPrincipal userPrincipal)
-                {
-                    adUsers.Add(MapUserPrincipalToADUser(userPrincipal));
-                }
-            }
-
-            _logger.LogInformation("Group {GroupName} has {Count} members", groupName, adUsers.Count);
-            return Result.Success<IEnumerable<ADUser>>(adUsers);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error getting members of group: {GroupName}", groupName);
-            return Result.Failure<IEnumerable<ADUser>>($"Error getting group members: {ex.Message}");
-        }
-    }, cancellationToken);
-}
-
-/// <summary>
-/// Creates a new group in Active Directory
-/// </summary>
-public async Task<Result<ADGroup>> CreateGroupAsync(
-    string groupName,
-    string description,
-    string groupScope,
-    string groupType,
-    string organizationalUnit = "",
-    CancellationToken cancellationToken = default)
-{
-    return await Task.Run(() =>
-    {
-        try
-        {
-            _logger.LogInformation("Creating group: {GroupName}", groupName);
-
-            using var context = string.IsNullOrWhiteSpace(organizationalUnit)
-                ? GetPrincipalContext()
-                : new PrincipalContext(ContextType.Domain, _config.Domain, organizationalUnit, 
-                    _config.Username, _config.Password);
-
-            using var group = new GroupPrincipal(context)
-            {
-                Name = groupName,
-                SamAccountName = groupName,
-                Description = description
-            };
-
-            // Set group scope
-            if (!string.IsNullOrWhiteSpace(groupScope))
-            {
-                group.GroupScope = groupScope.ToLower() switch
-                {
-                    "global" => GroupScope.Global,
-                    "universal" => GroupScope.Universal,
-                    "local" => GroupScope.Local,
-                    _ => GroupScope.Global
-                };
-            }
-
-            // Note: GroupPrincipal doesn't have IsSecurityGroup property
-            // Group type is determined by GroupPrincipal vs DistributionGroup
-
-            group.Save();
-
-            var adGroup = MapGroupPrincipalToADGroup(group);
-
-            _logger.LogInformation("Successfully created group: {GroupName}", groupName);
-            return Result<ADGroup>.Success(adGroup);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error creating group: {GroupName}", groupName);
-            return Result.Failure<ADGroup>($"Error creating group: {ex.Message}");
-        }
-    }, cancellationToken);
-}
-
-/// <summary>
-/// Deletes a group from Active Directory
-/// </summary>
-public async Task<Result> DeleteGroupAsync(string groupName, CancellationToken cancellationToken = default)
-{
-    return await Task.Run(() =>
-    {
-        try
-        {
-            _logger.LogInformation("Deleting group: {GroupName}", groupName);
-
-            using var context = GetPrincipalContext();
-            using var group = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
-
-            if (group == null)
-            {
-                _logger.LogWarning("Group not found: {GroupName}", groupName);
-                return Result.Failure($"Group '{groupName}' not found");
-            }
-
-            group.Delete();
-
-            _logger.LogInformation("Successfully deleted group: {GroupName}", groupName);
-            return Result.Success($"Group '{groupName}' deleted successfully");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error deleting group: {GroupName}", groupName);
-            return Result.Failure($"Error deleting group: {ex.Message}");
-        }
-    }, cancellationToken);
-}
-
-/// <summary>
-/// Updates group properties
-/// </summary>
-public async Task<Result> UpdateGroupAsync(ADGroup group, CancellationToken cancellationToken = default)
-{
-    return await Task.Run(() =>
-    {
-        try
-        {
-            _logger.LogInformation("Updating group: {GroupName}", group.Name);
-
-            using var context = GetPrincipalContext();
-            using var groupPrincipal = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, group.SamAccountName);
-
-            if (groupPrincipal == null)
-            {
-                _logger.LogWarning("Group not found: {GroupName}", group.Name);
-                return Result.Failure($"Group '{group.Name}' not found");
-            }
-
-            // Update properties
-            groupPrincipal.Description = group.Description;
-
-            // Use DirectoryEntry for additional properties
-            using var entry = groupPrincipal.GetUnderlyingObject() as DirectoryEntry;
+            results?.Dispose();
             if (entry != null)
-            {
-                if (!string.IsNullOrWhiteSpace(group.Email))
-                    entry.Properties["mail"].Value = group.Email;
-
-                if (!string.IsNullOrWhiteSpace(group.ManagedBy))
-                    entry.Properties["managedBy"].Value = group.ManagedBy;
-
-                entry.CommitChanges();
-            }
-
-            groupPrincipal.Save();
-
-            _logger.LogInformation("Successfully updated group: {GroupName}", group.Name);
-            return Result.Success($"Group '{group.Name}' updated successfully");
+                ReturnToPool(entry);
+            _connectionLock.Release();
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error updating group: {GroupName}", group.Name);
-            return Result.Failure($"Error updating group: {ex.Message}");
-        }
-    }, cancellationToken);
-}
-public async Task<Result> UpdateUserAsync(ADUser user, CancellationToken cancellationToken = default)
-{
-    return await Task.Run(() =>
-    {
-        try
-        {
-            using var entry = GetDirectoryEntry(user.DistinguishedName);
-
-            // Update example fields
-            entry.Properties["displayName"].Value = user.DisplayName;
-            entry.Properties["description"].Value = user.Description;
-            entry.Properties["department"].Value = user.Department;
-            entry.Properties["title"].Value = user.Title;
-            entry.Properties["company"].Value = user.Company;
-            entry.Properties["officeName"].Value = user.Office;
-            //entry.Properties["telephoneNumber"].Value = user.TelephoneNumber;
-            //entry.Properties["mobile"].Value = user.Mobile;
-
-            entry.CommitChanges();
-
-            _logger.LogInformation("Updated user {Username}", user.Username);
-            return Result.Success("User updated successfully");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error updating user {Username}", user.Username);
-            return Result.Failure($"Error updating user: {ex.Message}");
-        }
-    }, cancellationToken);
-}
-
-    #endregion
-
-    #region Helper Methods for Group Mapping
+    }
 
     /// <summary>
-    /// Maps SearchResult to ADGroup
+    /// ✨ NEW: Batch query groups by DNs
     /// </summary>
-    private ADGroup MapSearchResultToADGroup(SearchResult result)
-{
-    var groupType = GetInt32Property(result, "groupType");
-    
-    return new ADGroup
+    private async Task<List<ADGroup>> BatchQueryGroupsAsync(
+        List<string> distinguishedNames,
+        CancellationToken cancellationToken)
     {
-        Name = GetProperty(result, "cn"),
-        DistinguishedName = GetProperty(result, "distinguishedName"),
-        Description = GetProperty(result, "description"),
-        GroupScope = GetGroupScope(groupType),
-        GroupType = GetGroupType(groupType),
-        Email = GetProperty(result, "mail"),
-        ManagedBy = GetProperty(result, "managedBy"),
-        Members = GetMultiValueProperty(result, "member"),
-        MemberOf = GetMultiValueProperty(result, "memberOf"),
-        WhenCreated = GetDateTimeProperty(result, "whenCreated"),
-        WhenChanged = GetDateTimeProperty(result, "whenChanged"),
-        SamAccountName = GetProperty(result, "sAMAccountName")
-    };
-}
+        var groups = new ConcurrentBag<ADGroup>();
+        var batches = distinguishedNames
+            .Select((dn, index) => new { dn, index })
+            .GroupBy(x => x.index / BATCH_SIZE)
+            .Select(g => g.Select(x => x.dn).ToList())
+            .ToList();
 
-/// <summary>
-/// Maps GroupPrincipal to ADGroup
-/// </summary>
-private ADGroup MapGroupPrincipalToADGroup(GroupPrincipal group)
-{
-    var members = new List<string>();
-    var memberOf = new List<string>();
+        await Task.Run(() =>
+        {
+            Parallel.ForEach(
+                batches,
+                new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = _config.MaxParallelDegree,
+                    CancellationToken = cancellationToken
+                },
+                batch =>
+                {
+                    DirectoryEntry? batchEntry = null;
+                    SearchResultCollection? batchResults = null;
 
-    try
-    {
-        var groupMembers = group.GetMembers();
-        members = groupMembers.Select(m => m.DistinguishedName).ToList();
+                    try
+                    {
+                        batchEntry = GetDirectoryEntry();
+
+                        var filterParts = batch.Select(dn =>
+                            $"(distinguishedName={EscapeLdapFilter(dn)})");
+
+                        var batchFilter = $"(&(objectCategory=group)(|{string.Join("", filterParts)}))";
+
+                        using var batchSearcher = new DirectorySearcher(batchEntry)
+                        {
+                            Filter = batchFilter,
+                            PageSize = BATCH_SIZE
+                        };
+
+                        batchSearcher.PropertiesToLoad.AddRange(new[]
+                        {
+                            "cn", "name", "distinguishedName", "description",
+                            "groupType", "mail", "managedBy", "whenCreated", "whenChanged"
+                        });
+
+                        batchResults = batchSearcher.FindAll();
+
+                        foreach (SearchResult result in batchResults)
+                        {
+                            try
+                            {
+                                groups.Add(MapSearchResultToADGroup(result));
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "Failed to map group from batch");
+                            }
+                            finally
+                            {
+                                result?.Dispose();
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to process group batch");
+                    }
+                    finally
+                    {
+                        batchResults?.Dispose();
+                        if (batchEntry != null)
+                            ReturnToPool(batchEntry);
+                    }
+                });
+        }, cancellationToken);
+
+        return groups.ToList();
     }
-    catch { /* Ignore errors getting members */ }
 
-    try
-    {
-        var groups = group.GetGroups();
-        memberOf = groups.Select(g => g.DistinguishedName).ToList();
-    }
-    catch { /* Ignore errors getting groups */ }
-
-    return new ADGroup
-    {
-        Name = group.Name,
-        DistinguishedName = group.DistinguishedName,
-        Description = group.Description,
-        GroupScope = group.GroupScope?.ToString() ?? "Unknown",
-        GroupType = group.IsSecurityGroup == true ? "Security" : "Distribution",
-        Email = string.Empty, // Not available in GroupPrincipal
-        ManagedBy = string.Empty, // Not available in GroupPrincipal
-        Members = members,
-        MemberOf = memberOf,
-        WhenCreated = DateTime.MinValue, // Not available in GroupPrincipal
-        WhenChanged = DateTime.MinValue, // Not available in GroupPrincipal
-        SamAccountName = group.SamAccountName
-    };
-}
-
-/// <summary>
-/// Gets group scope from groupType flag
-/// </summary>
-private string GetGroupScope(int groupType)
-{
-    // GroupType flags:
-    // 2 = Global
-    // 4 = Domain Local
-    // 8 = Universal
-
-    if ((groupType & 8) == 8)
-        return "Universal";
-    if ((groupType & 4) == 4)
-        return "DomainLocal";
-    if ((groupType & 2) == 2)
-        return "Global";
-
-    return "Unknown";
-}
-
-/// <summary>
-/// Gets group type from groupType flag
-/// </summary>
-private string GetGroupType(int groupType)
-{
-    // GroupType flags:
-    // -2147483648 (0x80000000) = Security Group
-    // If not security, it's a Distribution Group
-
-    return (groupType & -2147483648) != 0 ? "Security" : "Distribution";
-}
-
-#endregion
-
-    #region Organizational Unit Operations
-
-    public async Task<Result<IEnumerable<OrganizationalUnit>>> GetAllOUsAsync(CancellationToken cancellationToken = default)
+    public async Task<Result> AddUserToGroupAsync(
+        string username,
+        string groupName,
+        CancellationToken cancellationToken = default)
     {
         return await Task.Run(() =>
         {
             try
             {
-                _logger.LogInformation("Retrieving all organizational units");
+                _logger.LogInformation("Adding user {Username} to group {GroupName}", username, groupName);
 
-                using var entry = new DirectoryEntry(_config.LdapPath);
-                using var searcher = new DirectorySearcher(entry)
+                using var context = GetPrincipalContext();
+                using var user = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
+
+                if (user == null)
                 {
-                    Filter = "(objectClass=organizationalUnit)",
-                    PageSize = _config.PageSize
-                };
-
-                searcher.PropertiesToLoad.AddRange(new[] { "name", "distinguishedName", "description", "whenCreated", "whenChanged" });
-
-                var ous = new List<OrganizationalUnit>();
-                var results = searcher.FindAll();
-
-                foreach (SearchResult result in results)
-                {
-                    try
-                    {
-                        ous.Add(new OrganizationalUnit
-                        {
-                            Name = GetProperty(result, "name"),
-                            DistinguishedName = GetProperty(result, "distinguishedName"),
-                            Description = GetProperty(result, "description"),
-                            Path = GetProperty(result, "distinguishedName"),
-                            WhenCreated = GetDateTimeProperty(result, "whenCreated"),
-                            WhenChanged = GetDateTimeProperty(result, "whenChanged")
-                        });
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to map OU from search result");
-                    }
+                    return Result.Failure($"User '{username}' not found");
                 }
 
-                _logger.LogInformation("Retrieved {Count} organizational units", ous.Count);
-                return Result.Success<IEnumerable<OrganizationalUnit>>(ous, $"Retrieved {ous.Count} organizational units");
+                using var group = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
+
+                if (group == null)
+                {
+                    return Result.Failure($"Group '{groupName}' not found");
+                }
+
+                if (user.IsMemberOf(group))
+                {
+                    return Result.Success($"User '{username}' is already a member of group '{groupName}'");
+                }
+
+                group.Members.Add(user);
+                group.Save();
+
+                _logger.LogInformation("Successfully added user {Username} to group {GroupName}", username, groupName);
+                return Result.Success($"User '{username}' added to group '{groupName}' successfully");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving organizational units");
-                return Result.Failure<IEnumerable<OrganizationalUnit>>($"Failed to retrieve organizational units: {ex.Message}");
+                _logger.LogError(ex, "Error adding user {Username} to group {GroupName}", username, groupName);
+                return Result.Failure($"Error adding user to group: {ex.Message}");
+            }
+        }, cancellationToken);
+    }
+
+    public async Task<Result> RemoveUserFromGroupAsync(
+        string username,
+        string groupName,
+        CancellationToken cancellationToken = default)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                _logger.LogInformation("Removing user {Username} from group {GroupName}", username, groupName);
+
+                using var context = GetPrincipalContext();
+                using var user = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, username);
+
+                if (user == null)
+                {
+                    return Result.Failure($"User '{username}' not found");
+                }
+
+                using var group = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
+
+                if (group == null)
+                {
+                    return Result.Failure($"Group '{groupName}' not found");
+                }
+
+                if (!user.IsMemberOf(group))
+                {
+                    return Result.Success($"User '{username}' is not a member of group '{groupName}'");
+                }
+
+                group.Members.Remove(user);
+                group.Save();
+
+                _logger.LogInformation("Successfully removed user {Username} from group {GroupName}", username, groupName);
+                return Result.Success($"User '{username}' removed from group '{groupName}' successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error removing user {Username} from group {GroupName}", username, groupName);
+                return Result.Failure($"Error removing user from group: {ex.Message}");
+            }
+        }, cancellationToken);
+    }
+
+    public async Task<Result<ADGroup>> CreateGroupAsync(
+        string groupName,
+        string description,
+        string groupScope,
+        string groupType,
+        string organizationalUnit,
+        CancellationToken cancellationToken = default)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                _logger.LogInformation("Creating group: {GroupName}", groupName);
+
+                using var context = string.IsNullOrWhiteSpace(organizationalUnit)
+                    ? GetPrincipalContext()
+                    : GetPrincipalContext(); // TODO: Handle OU-specific context
+
+                using var existingGroup = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
+                if (existingGroup != null)
+                {
+                    return Result.Failure<ADGroup>($"Group '{groupName}' already exists");
+                }
+
+                using var newGroup = new GroupPrincipal(context)
+                {
+                    SamAccountName = groupName,
+                    Name = groupName,
+                    Description = description
+                };
+
+                newGroup.Save();
+
+                using var createdGroup = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
+                if (createdGroup == null)
+                {
+                    return Result.Failure<ADGroup>("Group was created but could not be retrieved");
+                }
+
+                var adGroup = MapGroupPrincipalToADGroup(createdGroup);
+                _logger.LogInformation("Group {GroupName} created successfully", groupName);
+                return Result.Success(adGroup, "Group created successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating group: {GroupName}", groupName);
+                return Result.Failure<ADGroup>($"Failed to create group: {ex.Message}");
+            }
+        }, cancellationToken);
+    }
+
+    public async Task<Result> DeleteGroupAsync(string groupName, CancellationToken cancellationToken = default)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                _logger.LogInformation("Deleting group: {GroupName}", groupName);
+
+                using var context = GetPrincipalContext();
+                using var group = GroupPrincipal.FindByIdentity(context, IdentityType.SamAccountName, groupName);
+
+                if (group == null)
+                {
+                    return Result.Failure($"Group '{groupName}' not found");
+                }
+
+                group.Delete();
+
+                _logger.LogInformation("Successfully deleted group: {GroupName}", groupName);
+                return Result.Success($"Group '{groupName}' deleted successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error deleting group: {GroupName}", groupName);
+                return Result.Failure($"Error deleting group: {ex.Message}");
+            }
+        }, cancellationToken);
+    }
+
+    public async Task<Result> UpdateGroupAsync(ADGroup group, CancellationToken cancellationToken = default)
+    {
+        return await Task.Run(() =>
+        {
+            DirectoryEntry? entry = null;
+            try
+            {
+                _logger.LogInformation("Updating group: {GroupName}", group.Name);
+
+                entry = GetDirectoryEntry(group.DistinguishedName);
+
+                SetPropertyIfNotNull(entry, "description", group.Description);
+                SetPropertyIfNotNull(entry, "mail", group.Email);
+                SetPropertyIfNotNull(entry, "managedBy", group.ManagedBy);
+
+                entry.CommitChanges();
+
+                _logger.LogInformation("Successfully updated group: {GroupName}", group.Name);
+                return Result.Success($"Group '{group.Name}' updated successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating group: {GroupName}", group.Name);
+                return Result.Failure($"Error updating group: {ex.Message}");
+            }
+            finally
+            {
+                if (entry != null)
+                    ReturnToPool(entry);
             }
         }, cancellationToken);
     }
 
     #endregion
 
-    #region Helper Methods
+    #region Organizational Unit Operations
 
-    private PrincipalContext GetPrincipalContext()
+    public async Task<Result<IEnumerable<OrganizationalUnit>>> GetAllOUsAsync(CancellationToken cancellationToken = default)
     {
+        await _connectionLock.WaitAsync(cancellationToken);
+        DirectoryEntry? entry = null;
+        SearchResultCollection? results = null;
+
         try
         {
-            // Prefer explicit LDAP server if configured to target a specific domain controller for consistency
-            var target = string.IsNullOrWhiteSpace(_config.LdapServer) ? _config.Domain : _config.LdapServer;
-            var container = string.IsNullOrWhiteSpace(_config.DefaultSearchOU) ? null : _config.DefaultSearchOU;
+            _logger.LogInformation("Getting all Organizational Units");
 
-            ContextOptions options = ContextOptions.Negotiate;
-            if (_config.UseSSL)
+            entry = GetDirectoryEntry();
+            using var searcher = new DirectorySearcher(entry)
             {
-                options |= ContextOptions.SecureSocketLayer;
-            }
+                Filter = "(objectClass=organizationalUnit)",
+                PageSize = _config.PageSize
+            };
 
-            if (!string.IsNullOrWhiteSpace(_config.Username) && !string.IsNullOrWhiteSpace(_config.Password))
+            searcher.PropertiesToLoad.AddRange(new[] { "name", "distinguishedName", "description" });
+
+            results = searcher.FindAll();
+            var ous = new List<OrganizationalUnit>();
+
+            foreach (SearchResult result in results)
             {
-                _logger.LogDebug("Creating PrincipalContext to {Target} with explicit credentials", target);
-                return new PrincipalContext(ContextType.Domain, target, container, options, _config.Username, _config.Password);
-            }
+                cancellationToken.ThrowIfCancellationRequested();
 
-            _logger.LogDebug("Creating PrincipalContext to {Target} using current credentials", target);
-            return new PrincipalContext(ContextType.Domain, target, container, options);
-        }
-        catch (PrincipalServerDownException ex)
-        {
-            _logger.LogError(ex, "PrincipalContext failed - server down for target {DomainOrServer}", _config.LdapServer ?? _config.Domain);
-            // Provide a helpful message to caller
-            throw new PrincipalServerDownException("LDAP server is unavailable. Verify the server address, port and network connectivity.", ex);
-        }
-        catch (LdapException ex)
-        {
-            _logger.LogError(ex, "LDAP exception creating PrincipalContext");
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Unexpected error creating PrincipalContext");
-            throw;
-        }
-    }
-
-    private void LoadUserProperties(DirectorySearcher searcher)
-    {
-        var properties = new[]
-        {
-            "sAMAccountName", "displayName", "mail", "givenName", "sn",
-            "department", "title", "company", "physicalDeliveryOfficeName", "manager",
-            "telephoneNumber", "mobile", "facsimileTelephoneNumber",
-            "streetAddress", "l", "st", "postalCode", "co",
-            "distinguishedName", "userAccountControl", "lockoutTime",
-            "pwdLastSet", "accountExpires", "whenCreated", "whenChanged",
-            "description", "memberOf"
-        };
-
-        searcher.PropertiesToLoad.AddRange(properties);
-    }
-
-    private ADUser MapUserPrincipalToADUser(UserPrincipal user)
-    {
-        using var entry = user.GetUnderlyingObject() as DirectoryEntry;
-
-        var adUser = new ADUser
-        {
-            Username = user.SamAccountName ?? string.Empty,
-            DisplayName = user.DisplayName ?? string.Empty,
-            Email = user.EmailAddress ?? string.Empty,
-            FirstName = user.GivenName ?? string.Empty,
-            LastName = user.Surname ?? string.Empty,
-            DistinguishedName = user.DistinguishedName ?? string.Empty,
-            IsEnabled = user.Enabled ?? false,
-            IsLockedOut = user.IsAccountLockedOut(),
-            LastLogon = user.LastLogon,
-            LastPasswordSet = user.LastPasswordSet,
-            AccountExpires = user.AccountExpirationDate,
-            Description = user.Description ?? string.Empty
-        };
-
-        // Additional properties from DirectoryEntry
-        if (entry != null)
-        {
-            adUser.Department = entry.Properties["department"].Value?.ToString() ?? string.Empty;
-            adUser.Title = entry.Properties["title"].Value?.ToString() ?? string.Empty;
-            adUser.Company = entry.Properties["company"].Value?.ToString() ?? string.Empty;
-            adUser.Office = entry.Properties["physicalDeliveryOfficeName"].Value?.ToString() ?? string.Empty;
-            adUser.PhoneNumber = entry.Properties["telephoneNumber"].Value?.ToString() ?? string.Empty;
-            adUser.MobileNumber = entry.Properties["mobile"].Value?.ToString() ?? string.Empty;
-        }
-
-        // Get groups from DirectoryEntry memberOf which is much faster than enumerating GroupPrincipal objects
-        try
-        {
-            var groups = new List<string>();
-
-            if (entry != null && entry.Properties.Contains("memberOf"))
-            {
-                foreach (var val in entry.Properties["memberOf"] )
+                try
                 {
-                    var dn = val?.ToString();
-                    if (!string.IsNullOrWhiteSpace(dn))
+                    var ou = new OrganizationalUnit
                     {
-                        groups.Add(GetNameFromDistinguishedName(dn));
-                    }
+                        Name = GetProperty(result, "name"),
+                        DistinguishedName = GetProperty(result, "distinguishedName"),
+                        Description = GetProperty(result, "description")
+                    };
+                    ous.Add(ou);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to map OU");
+                }
+                finally
+                {
+                    result?.Dispose();
                 }
             }
 
-            adUser.MemberOf = groups;
+            _logger.LogInformation("Retrieved {Count} OUs", ous.Count);
+            return Result.Success<IEnumerable<OrganizationalUnit>>(ous);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to retrieve groups for user: {Username}", user.SamAccountName);
-            adUser.MemberOf = new List<string>();
+            _logger.LogError(ex, "Error getting OUs");
+            return Result.Failure<IEnumerable<OrganizationalUnit>>($"Error getting OUs: {ex.Message}");
         }
-
-        return adUser;
+        finally
+        {
+            results?.Dispose();
+            if (entry != null)
+                ReturnToPool(entry);
+            _connectionLock.Release();
+        }
     }
 
-    private string GetNameFromDistinguishedName(string dn)
+    #endregion
+
+    #region Helper Methods
+
+    private void LoadUserProperties(DirectorySearcher searcher)
     {
-        // Extract the CN or first RDN value from a distinguished name: CN=Group Name,OU=... -> Group Name
-        if (string.IsNullOrWhiteSpace(dn)) return string.Empty;
-
-        try
+        searcher.PropertiesToLoad.AddRange(new[]
         {
-            var parts = dn.Split(',');
-            if (parts.Length == 0) return dn;
-
-            var rdn = parts[0];
-            var equalsIndex = rdn.IndexOf('=');
-            if (equalsIndex <= 0 || equalsIndex >= rdn.Length - 1) return rdn;
-
-            return rdn[(equalsIndex + 1)..].Trim();
-        }
-        catch
-        {
-            return dn;
-        }
+            "sAMAccountName", "userPrincipalName", "displayName", "mail",
+            "givenName", "sn", "middleName", "initials", "cn", "name",
+            "description", "department", "title", "company", "manager",
+            "physicalDeliveryOfficeName", "telephoneNumber", "homePhone",
+            "mobile", "facsimileTelephoneNumber", "distinguishedName",
+            "userAccountControl", "lockoutTime", "whenCreated", "whenChanged",
+            "lastLogonTimestamp", "lastLogon", "pwdLastSet", "accountExpires",
+            "memberOf"
+        });
     }
 
     private ADUser MapSearchResultToADUser(SearchResult result)
     {
-        var uac = GetInt32Property(result, "userAccountControl");
-        var isEnabled = (uac & 0x0002) == 0; // ADS_UF_ACCOUNTDISABLE
-
         return new ADUser
         {
             Username = GetProperty(result, "sAMAccountName"),
+            UserPrincipalName = GetProperty(result, "userPrincipalName"),
             DisplayName = GetProperty(result, "displayName"),
             Email = GetProperty(result, "mail"),
             FirstName = GetProperty(result, "givenName"),
             LastName = GetProperty(result, "sn"),
+            MiddleName = GetProperty(result, "middleName"),
+            Initials = GetProperty(result, "initials"),
             Department = GetProperty(result, "department"),
             Title = GetProperty(result, "title"),
             Company = GetProperty(result, "company"),
             Office = GetProperty(result, "physicalDeliveryOfficeName"),
             Manager = GetProperty(result, "manager"),
             PhoneNumber = GetProperty(result, "telephoneNumber"),
+            HomePhone = GetProperty(result, "homePhone"),
             MobileNumber = GetProperty(result, "mobile"),
             FaxNumber = GetProperty(result, "facsimileTelephoneNumber"),
-            StreetAddress = GetProperty(result, "streetAddress"),
-            City = GetProperty(result, "l"),
-            State = GetProperty(result, "st"),
-            PostalCode = GetProperty(result, "postalCode"),
-            Country = GetProperty(result, "co"),
             DistinguishedName = GetProperty(result, "distinguishedName"),
-            IsEnabled = isEnabled,
-            IsLockedOut = GetInt64Property(result, "lockoutTime") > 0,
-            LastPasswordSet = ConvertFileTimeToDateTime(GetInt64Property(result, "pwdLastSet")),
-            AccountExpires = ConvertFileTimeToDateTime(GetInt64Property(result, "accountExpires")),
-            WhenCreated = GetDateTimeProperty(result, "whenCreated"),
-            WhenChanged = GetDateTimeProperty(result, "whenChanged"),
             Description = GetProperty(result, "description"),
+            IsEnabled = IsAccountEnabled(GetProperty(result, "userAccountControl")),
+            IsLockedOut = IsAccountLockedOut(result),
+            WhenCreated = GetDateProperty(result, "whenCreated"),
+            WhenChanged = GetDateProperty(result, "whenChanged"),
+            LastLogon = GetFileTimeProperty(result, "lastLogonTimestamp"),
+            LastPasswordSet = GetFileTimeProperty(result, "pwdLastSet"),
+            AccountExpires = GetAccountExpires(result),
             MemberOf = GetMultiValueProperty(result, "memberOf")
+        };
+    }
+
+    private ADUser MapUserPrincipalToADUser(UserPrincipal principal)
+    {
+        return new ADUser
+        {
+            Username = principal.SamAccountName ?? string.Empty,
+            UserPrincipalName = principal.UserPrincipalName ?? string.Empty,
+            DisplayName = principal.DisplayName ?? string.Empty,
+            Email = principal.EmailAddress ?? string.Empty,
+            FirstName = principal.GivenName ?? string.Empty,
+            LastName = principal.Surname ?? string.Empty,
+            DistinguishedName = principal.DistinguishedName ?? string.Empty,
+            Description = principal.Description ?? string.Empty,
+            IsEnabled = principal.Enabled ?? false,
+            IsLockedOut = principal.IsAccountLockedOut()
+        };
+    }
+
+    private ADGroup MapSearchResultToADGroup(SearchResult result)
+    {
+        return new ADGroup
+        {
+            Name = GetProperty(result, "cn"),
+            DistinguishedName = GetProperty(result, "distinguishedName"),
+            Description = GetProperty(result, "description"),
+            Email = GetProperty(result, "mail"),
+            ManagedBy = GetProperty(result, "managedBy"),
+            GroupScope = GetProperty(result, "groupType"),
+            GroupType = GetProperty(result, "groupType"),
+            WhenCreated = GetDateProperty(result, "whenCreated"),
+            WhenChanged = GetDateProperty(result, "whenChanged"),
+            Members = GetMultiValueProperty(result, "member"),
+            MemberOf = GetMultiValueProperty(result, "memberOf")
+        };
+    }
+
+    private ADGroup MapGroupPrincipalToADGroup(GroupPrincipal principal)
+    {
+        return new ADGroup
+        {
+            Name = principal.Name ?? string.Empty,
+            DistinguishedName = principal.DistinguishedName ?? string.Empty,
+            Description = principal.Description ?? string.Empty
         };
     }
 
     private string GetProperty(SearchResult result, string propertyName)
     {
-        return result.Properties.Contains(propertyName) && result.Properties[propertyName].Count > 0
+        return result.Properties.Contains(propertyName) &&
+               result.Properties[propertyName].Count > 0
             ? result.Properties[propertyName][0]?.ToString() ?? string.Empty
             : string.Empty;
     }
 
-    private int GetInt32Property(SearchResult result, string propertyName)
-    {
-        if (result.Properties.Contains(propertyName) && result.Properties[propertyName].Count > 0)
-        {
-            if (int.TryParse(result.Properties[propertyName][0]?.ToString(), out var value))
-            {
-                return value;
-            }
-        }
-        return 0;
-    }
-
-    private long GetInt64Property(SearchResult result, string propertyName)
+    private DateTime? GetDateProperty(SearchResult result, string propertyName)
     {
         if (result.Properties.Contains(propertyName) && result.Properties[propertyName].Count > 0)
         {
             var value = result.Properties[propertyName][0];
-            if (value is long longValue)
-            {
-                return longValue;
-            }
-            if (long.TryParse(value?.ToString(), out var parsedValue))
-            {
-                return parsedValue;
-            }
+            if (value is DateTime dt)
+                return dt;
         }
-        return 0;
+        return null;
     }
 
-    private DateTime? GetDateTimeProperty(SearchResult result, string propertyName)
+    private DateTime? GetFileTimeProperty(SearchResult result, string propertyName)
     {
         if (result.Properties.Contains(propertyName) && result.Properties[propertyName].Count > 0)
         {
             var value = result.Properties[propertyName][0];
-            if (value is DateTime dateTime)
+            if (value is long fileTime && fileTime > 0)
             {
-                return dateTime;
+                try
+                {
+                    return DateTime.FromFileTimeUtc(fileTime);
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
+    private DateTime? GetAccountExpires(SearchResult result)
+    {
+        if (result.Properties.Contains("accountExpires") && result.Properties["accountExpires"].Count > 0)
+        {
+            var value = result.Properties["accountExpires"][0];
+            if (value is long accountExpires && accountExpires > 0 && accountExpires != 9223372036854775807)
+            {
+                try
+                {
+                    return DateTime.FromFileTimeUtc(accountExpires);
+                }
+                catch
+                {
+                    return null;
+                }
             }
         }
         return null;
@@ -1560,82 +1801,75 @@ private string GetGroupType(int groupType)
         return values;
     }
 
-    private DateTime? ConvertFileTimeToDateTime(long fileTime)
+    private bool IsAccountEnabled(string userAccountControl)
     {
-        if (fileTime == 0 || fileTime == long.MaxValue)
+        if (string.IsNullOrWhiteSpace(userAccountControl))
+            return false;
+
+        if (int.TryParse(userAccountControl, out var uac))
         {
-            return null;
+            const int ADS_UF_ACCOUNTDISABLE = 0x0002;
+            return (uac & ADS_UF_ACCOUNTDISABLE) == 0;
         }
 
-        try
-        {
-            return DateTime.FromFileTime(fileTime);
-        }
-        catch
-        {
-            return null;
-        }
+        return false;
     }
 
-    // Escape special characters in LDAP search filters to avoid malformed filters or injection
+    private bool IsAccountLockedOut(SearchResult result)
+    {
+        if (result.Properties.Contains("lockoutTime") && result.Properties["lockoutTime"].Count > 0)
+        {
+            var value = result.Properties["lockoutTime"][0];
+            if (value is long lockoutTime)
+            {
+                return lockoutTime > 0;
+            }
+        }
+        return false;
+    }
+
     private string EscapeLdapFilter(string input)
     {
-        if (string.IsNullOrEmpty(input)) return string.Empty;
+        if (string.IsNullOrEmpty(input))
+            return input;
 
-        var sb = new StringBuilder();
-        foreach (var c in input)
-        {
-            switch (c)
-            {
-                case '\\': sb.Append("\\5c"); break;
-                case '*': sb.Append("\\2a"); break;
-                case '(' : sb.Append("\\28"); break;
-                case ')' : sb.Append("\\29"); break;
-                case '\0': sb.Append("\\00"); break;
-                default: sb.Append(c); break;
-            }
-        }
-        return sb.ToString();
+        return input
+            .Replace("\\", "\\5c")
+            .Replace("*", "\\2a")
+            .Replace("(", "\\28")
+            .Replace(")", "\\29")
+            .Replace("\0", "\\00")
+            .Replace("/", "\\2f");
     }
-    private DirectoryEntry GetDirectoryEntry(string? searchPath = null)
+
+    #endregion
+
+    #region Dispose
+
+    public void Dispose()
     {
-        try
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        // Dispose all pooled connections
+        while (_connectionPool.TryTake(out var entry))
         {
-            string ldapPath = string.IsNullOrWhiteSpace(searchPath)
-                ? _config.LdapPath
-                : searchPath;
-
-            AuthenticationTypes authType = AuthenticationTypes.Secure;
-            if (_config.UseSSL)
-                authType |= AuthenticationTypes.SecureSocketsLayer;
-
-            string? username = _config.Username;
-            string? password = _config.Password;
-
-            // Chuẩn hóa username (DOMAIN\username) nếu cần
-            if (!string.IsNullOrWhiteSpace(username) &&
-                !username.Contains("\\") && !username.Contains("@") &&
-                !string.IsNullOrWhiteSpace(_config.Domain))
+            try
             {
-                username = $"{_config.Domain}\\{username}";
+                entry?.Dispose();
             }
-
-            if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrWhiteSpace(password))
+            catch (Exception ex)
             {
-                _logger.LogDebug("Creating DirectoryEntry with credentials for {LdapPath}", ldapPath);
-                return new DirectoryEntry(ldapPath, username, password, authType);
+                _logger.LogWarning(ex, "Error disposing pooled connection");
             }
+        }
 
-            _logger.LogDebug("Creating DirectoryEntry without explicit credentials for {LdapPath}", ldapPath);
-            return new DirectoryEntry(ldapPath);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to create DirectoryEntry");
-            throw;
-        }
+        _connectionLock?.Dispose();
+
+        _logger.LogInformation("ADRepository disposed");
     }
-
 
     #endregion
 }

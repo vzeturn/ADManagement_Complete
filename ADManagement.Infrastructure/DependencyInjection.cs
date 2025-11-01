@@ -62,6 +62,8 @@ public static class DependencyInjection
         // Register infrastructure helper services
         services.AddScoped<ADConnectionDiagnosticsService>();
 
+
+
         return services;
     }
 

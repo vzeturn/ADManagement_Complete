@@ -1,14 +1,18 @@
-using ADManagement.Application.Interfaces;
+﻿using ADManagement.Application.Interfaces;
+using ADManagement.Domain.Interfaces;
 using ADManagement.WPF.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
+using System;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace ADManagement.WPF.ViewModels;
 
 /// <summary>
-/// ViewModel for Export View
+/// ✨ OPTIMIZED ViewModel for Export View with progress feedback
 /// </summary>
 public partial class ExportViewModel : ObservableObject
 {
@@ -16,20 +20,36 @@ public partial class ExportViewModel : ObservableObject
     private readonly IDialogService _dialogService;
     private readonly ILogger<ExportViewModel> _logger;
 
+    // ✨ NEW: Cancellation support
+    private CancellationTokenSource? _exportCancellation;
+
     [ObservableProperty]
     private string _outputPath = string.Empty;
 
     [ObservableProperty]
-    private bool _includeDisabledAccounts = true;
+    private string _ouPath = string.Empty;
 
     [ObservableProperty]
-    private bool _isLoading;
+    private bool _isExporting;
 
     [ObservableProperty]
-    private string _statusMessage = "Ready";
+    private string _statusMessage = "Ready to export";
 
     [ObservableProperty]
-    private string _lastExportedFile = string.Empty;
+    private string? _lastExportedFile;
+
+    // ✨ NEW: Progress tracking
+    [ObservableProperty]
+    private double _exportProgress;
+
+    [ObservableProperty]
+    private string _exportProgressMessage = string.Empty;
+
+    [ObservableProperty]
+    private int _exportedCount;
+
+    [ObservableProperty]
+    private string _exportTimeElapsed = string.Empty;
 
     public ExportViewModel(
         IExportService exportService,
@@ -41,7 +61,8 @@ public partial class ExportViewModel : ObservableObject
         _logger = logger;
 
         // Set default output path
-        OutputPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ADExport.xlsx");
+        var desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+        OutputPath = Path.Combine(desktopPath, "ADExport.xlsx");
     }
 
     [RelayCommand]
@@ -57,7 +78,10 @@ public partial class ExportViewModel : ObservableObject
         }
     }
 
-    [RelayCommand]
+    /// <summary>
+    /// ✨ OPTIMIZED: Export with progress feedback
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanExport))]
     private async Task ExportAllUsersAsync()
     {
         if (string.IsNullOrWhiteSpace(OutputPath))
@@ -66,46 +90,89 @@ public partial class ExportViewModel : ObservableObject
             return;
         }
 
+        // Cancel previous export
+        _exportCancellation?.Cancel();
+        _exportCancellation = new CancellationTokenSource();
+        var cancellationToken = _exportCancellation.Token;
+
         try
         {
-            IsLoading = true;
+            IsExporting = true;
+            ExportProgress = 0;
+            ExportedCount = 0;
+            ExportProgressMessage = "Starting export...";
             StatusMessage = "Exporting all users...";
 
             _logger.LogInformation("Starting export of all users to: {OutputPath}", OutputPath);
 
-            var result = await _exportService.ExportAllUsersAsync(OutputPath);
+            // ✨ NEW: Progress reporter
+            var progress = new Progress<ExportProgress>(p =>
+            {
+                ExportProgress = p.PercentComplete;
+                ExportedCount = p.ProcessedCount;
+                ExportProgressMessage = $"Exporting... {p.ProcessedCount:N0} users";
+                ExportTimeElapsed = $"Time: {p.ElapsedTime.TotalSeconds:F0}s";
+            });
+
+            var result = await _exportService.ExportAllUsersAsync(
+                OutputPath,
+                progress,
+                cancellationToken);
 
             if (result.IsSuccess && !string.IsNullOrWhiteSpace(result.Value))
             {
                 LastExportedFile = result.Value;
                 StatusMessage = $"Export completed: {Path.GetFileName(result.Value)}";
-                
+                ExportProgressMessage = "Export completed!";
+
                 _dialogService.ShowSuccess(
-                    $"Successfully exported users to:\n{result.Value}", 
+                    $"Successfully exported users to:\n{result.Value}",
                     "Export Successful");
-                
+
                 _logger.LogInformation("Successfully exported users to: {FilePath}", result.Value);
             }
             else
             {
                 StatusMessage = "Export failed";
+                ExportProgressMessage = "Export failed";
                 _dialogService.ShowError(result.Message, "Export Failed");
                 _logger.LogWarning("Export failed: {Message}", result.Message);
             }
         }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Export cancelled";
+            ExportProgressMessage = "Cancelled";
+            _logger.LogInformation("Export cancelled by user");
+        }
         catch (Exception ex)
         {
             StatusMessage = "Error during export";
+            ExportProgressMessage = "Error";
             _dialogService.ShowError($"Error exporting users: {ex.Message}", "Error");
             _logger.LogError(ex, "Error exporting users");
         }
         finally
         {
-            IsLoading = false;
+            IsExporting = false;
+            ExportProgress = 0;
+            ExportTimeElapsed = string.Empty;
         }
     }
 
+    /// <summary>
+    /// ✨ NEW: Cancel export operation
+    /// </summary>
     [RelayCommand]
+    private void CancelExport()
+    {
+        _exportCancellation?.Cancel();
+        ExportProgressMessage = "Cancelling...";
+    }
+
+    private bool CanExport() => !IsExporting;
+
+    [RelayCommand(CanExecute = nameof(CanExport))]
     private async Task ExportGroupsAsync()
     {
         if (string.IsNullOrWhiteSpace(OutputPath))
@@ -116,31 +183,29 @@ public partial class ExportViewModel : ObservableObject
 
         try
         {
-            IsLoading = true;
-            StatusMessage = "Exporting all groups...";
+            IsExporting = true;
+            StatusMessage = "Exporting groups...";
 
-            // Change filename to Groups
-            var groupsPath = OutputPath.Replace("ADExport", "ADGroups");
+            _logger.LogInformation("Starting export of groups");
 
-            _logger.LogInformation("Starting export of all groups to: {OutputPath}", groupsPath);
-
-            var result = await _exportService.ExportAllGroupsAsync(groupsPath);
+            var result = await _exportService.ExportAllGroupsAsync(OutputPath);
 
             if (result.IsSuccess && !string.IsNullOrWhiteSpace(result.Value))
             {
                 LastExportedFile = result.Value;
                 StatusMessage = $"Export completed: {Path.GetFileName(result.Value)}";
-                
+
                 _dialogService.ShowSuccess(
-                    $"Successfully exported groups to:\n{result.Value}", 
+                    $"Successfully exported groups to:\n{result.Value}",
                     "Export Successful");
-                
+
                 _logger.LogInformation("Successfully exported groups to: {FilePath}", result.Value);
             }
             else
             {
                 StatusMessage = "Export failed";
                 _dialogService.ShowError(result.Message, "Export Failed");
+                _logger.LogWarning("Export groups failed: {Message}", result.Message);
             }
         }
         catch (Exception ex)
@@ -151,40 +216,22 @@ public partial class ExportViewModel : ObservableObject
         }
         finally
         {
-            IsLoading = false;
+            IsExporting = false;
         }
     }
 
     [RelayCommand]
-    private void OpenExportFolder()
+    private void OpenLastExportedFile()
     {
-        if (string.IsNullOrWhiteSpace(LastExportedFile) || !File.Exists(LastExportedFile))
+        if (string.IsNullOrWhiteSpace(LastExportedFile))
         {
-            _dialogService.ShowWarning("No exported file available.", "No File");
+            _dialogService.ShowInformation("No file has been exported yet.", "No File");
             return;
         }
 
-        try
+        if (!File.Exists(LastExportedFile))
         {
-            var folderPath = Path.GetDirectoryName(LastExportedFile);
-            if (!string.IsNullOrWhiteSpace(folderPath))
-            {
-                System.Diagnostics.Process.Start("explorer.exe", folderPath);
-            }
-        }
-        catch (Exception ex)
-        {
-            _dialogService.ShowError($"Error opening folder: {ex.Message}", "Error");
-            _logger.LogError(ex, "Error opening export folder");
-        }
-    }
-
-    [RelayCommand]
-    private void OpenExportedFile()
-    {
-        if (string.IsNullOrWhiteSpace(LastExportedFile) || !File.Exists(LastExportedFile))
-        {
-            _dialogService.ShowWarning("No exported file available.", "No File");
+            _dialogService.ShowWarning("The exported file no longer exists.", "File Not Found");
             return;
         }
 
@@ -199,7 +246,7 @@ public partial class ExportViewModel : ObservableObject
         catch (Exception ex)
         {
             _dialogService.ShowError($"Error opening file: {ex.Message}", "Error");
-            _logger.LogError(ex, "Error opening exported file");
+            _logger.LogError(ex, "Error opening exported file: {FilePath}", LastExportedFile);
         }
     }
 }
